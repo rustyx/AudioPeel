@@ -72,13 +72,11 @@ A lightweight Android video-to-audio tool that exports to MP3 / M4A / WAV / FLAC
 
 ## Permissions
 
-Least-privilege by design; no sensitive permissions requested:
-
-|                 Note                  |                                        Detail                                         |
-|:-------------------------------------:|:-------------------------------------------------------------------------------------:|
+|                 Note                  |                         Detail                         |
+|:-------------------------------------:|:------------------------------------------------------:|
 |         No storage permission         | Picking a video needs no storage read/write permission |
-|         No network permission         |                     Fully offline processing with no data upload                      |
-| No background/notification permission |                                     Not requested                                     |
+|         No network permission         |      Fully offline processing with no data upload      |
+| No background/notification permission |                     Not requested                      |
 
 ## Contributing
 
