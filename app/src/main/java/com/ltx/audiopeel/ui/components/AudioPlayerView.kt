@@ -46,15 +46,15 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * 音频播放器视图
+ * Audio player view
  *
- * @param filePath 音频文件路径
+ * @param filePath audio file path
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AudioPlayerView(filePath: String) {
     val context = LocalContext.current
-    // 根据文件路径创建ExoPlayer实例
+    // Create an ExoPlayer instance for the file path
     val exoPlayer = remember(filePath) {
         ExoPlayer.Builder(context).build().apply {
             val mediaItem = MediaItem.fromUri(Uri.fromFile(File(filePath)))
@@ -62,7 +62,7 @@ fun AudioPlayerView(filePath: String) {
             prepare()
         }
     }
-    // 播放状态和位置
+    // Playback state and position
     var isPlaying by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
@@ -76,13 +76,13 @@ fun AudioPlayerView(filePath: String) {
             duration = metadataDuration
         }
     }
-    // DisposableEffect用于管理ExoPlayer的生命周期
+    // DisposableEffect manages the ExoPlayer lifecycle
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingChanged: Boolean) {
                 isPlaying = isPlayingChanged
             }
-            // 监听播放位置变化
+            // Listen for playback position changes
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     val playerDuration = normalizeDuration(exoPlayer.duration)
@@ -100,7 +100,7 @@ fun AudioPlayerView(filePath: String) {
             exoPlayer.release()
         }
     }
-    // LaunchedEffect用于更新当前播放位置
+    // LaunchedEffect keeps the current position updated
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             if (!isSeeking) {
@@ -109,7 +109,7 @@ fun AudioPlayerView(filePath: String) {
             delay(100)
         }
     }
-    // 播放控制按钮和进度条
+    // Playback controls and progress slider
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -132,7 +132,7 @@ fun AudioPlayerView(filePath: String) {
                     tint = MaterialTheme.colorScheme.primary
                 )
             }
-            // 播放进度条
+            // Playback progress slider
             val interactionSource = remember { MutableInteractionSource() }
             Slider(
                 value = if (duration > 0) {
@@ -167,7 +167,7 @@ fun AudioPlayerView(filePath: String) {
                         modifier = Modifier.height(3.dp)
                     )
                 })
-            // 显示当前时间和总时长
+            // Show the current position and total duration
             Text(
                 text = formatTime(currentPosition) + " / " + formatTime(duration),
                 style = MaterialTheme.typography.bodySmall,
@@ -178,10 +178,10 @@ fun AudioPlayerView(filePath: String) {
 }
 
 /**
- * 格式化时间为字符串格式(分钟:秒)
+ * Formats a time as a string (minutes:seconds)
  *
- * @param ms 时间毫秒数
- * @return 格式化后的时间字符串
+ * @param ms time in milliseconds
+ * @return formatted time string
  */
 private fun formatTime(ms: Long): String {
     val safeMs = normalizeDuration(ms)
@@ -198,10 +198,10 @@ private fun formatTime(ms: Long): String {
 }
 
 /**
- * 归一化时间毫秒数(将无效值转换为0L)
+ * Normalizes a time in milliseconds (invalid values become 0L)
  *
- * @param ms 时间毫秒数
- * @return 归一化后的时间毫秒数
+ * @param ms time in milliseconds
+ * @return normalized time in milliseconds
  */
 private fun normalizeDuration(ms: Long): Long {
     if (ms == C.TIME_UNSET || ms <= 0L) return 0L
@@ -209,10 +209,10 @@ private fun normalizeDuration(ms: Long): Long {
 }
 
 /**
- * 从文件路径获取音频文件的总时长(毫秒)
+ * Gets the total duration of an audio file (milliseconds)
  *
- * @param filePath 音频文件路径
- * @return 音频文件的总时长(毫秒)
+ * @param filePath audio file path
+ * @return total duration in milliseconds
  */
 private fun getAudioDurationFromMetadata(filePath: String): Long {
     val retriever = MediaMetadataRetriever()

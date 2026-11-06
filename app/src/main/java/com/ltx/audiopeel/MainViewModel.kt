@@ -26,14 +26,14 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 音频提取格式
+ * Audio output format
  */
 enum class OutputFormat(val extension: String) {
     MP3("mp3"), M4A("m4a"), WAV("wav"), FLAC("flac"), OGG("ogg")
 }
 
 /**
- * 音频提取状态
+ * Audio extraction state
  */
 sealed class ExtractionState {
     data object Idle : ExtractionState()
@@ -44,7 +44,7 @@ sealed class ExtractionState {
 }
 
 /**
- * 视频元数据
+ * Video metadata
  */
 data class VideoMetadata(
     val durationMs: Long = 0L,
@@ -54,7 +54,7 @@ data class VideoMetadata(
 )
 
 /**
- * 主视图模型
+ * Main view model
  */
 class MainViewModel : ViewModel() {
     private val _state = MutableStateFlow<ExtractionState>(ExtractionState.Idle)
@@ -75,23 +75,23 @@ class MainViewModel : ViewModel() {
     private var cancelRequested = false
 
     /**
-     * 探测视频内嵌音频编码
+     * Probes the audio codec embedded in the video
      *
-     * @return Pair(源编码名, 推荐输出格式)
+     * @return Pair(source codec name, suggested output format)
      */
     private fun detectAudio(context: Context, uri: Uri): Pair<String, OutputFormat>? {
-        // 创建媒体提取器
+        // Create the media extractor
         val extractor = MediaExtractor()
         try {
-            // 设置数据源
+            // Set the data source
             extractor.setDataSource(context, uri, null)
-            // 遍历所有轨道
+            // Iterate over all tracks
             for (i in 0 until extractor.trackCount) {
-                // 获取轨道格式
+                // Get the track format
                 val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
-                // 判断是否为音轨
+                // Check whether it is an audio track
                 if (!mime.startsWith("audio/")) continue
-                // 按完整 MIME 映射为内部编码名
+                // Map the full MIME type to an internal codec name
                 val codec = when (mime) {
                     "audio/mp4a-latm" -> "aac"
                     "audio/mpeg" -> "mp3"
@@ -101,7 +101,7 @@ class MainViewModel : ViewModel() {
                     "audio/raw" -> "pcm"
                     else -> mime.removePrefix("audio/")
                 }
-                // 根据编码名推荐输出格式
+                // Suggest an output format based on the codec name
                 val recommended = when (codec) {
                     "aac" -> OutputFormat.M4A
                     "mp3" -> OutputFormat.MP3
@@ -112,11 +112,11 @@ class MainViewModel : ViewModel() {
                 return codec to recommended
             }
         } catch (e: Exception) {
-            Log.w("AudioPeel", "检测音频编码失败: ${e.message}", e)
+            Log.w("AudioPeel", "Failed to detect audio codec: ${e.message}", e)
         } finally {
             runCatching { extractor.release() }.onFailure {
                 Log.w(
-                    "AudioPeel", "释放 MediaExtractor 失败", it
+                    "AudioPeel", "Failed to release MediaExtractor", it
                 )
             }
         }
@@ -124,41 +124,41 @@ class MainViewModel : ViewModel() {
     }
 
     /**
-     * 选择视频文件
+     * Selects a video file
      *
-     * @param context 上下文
-     * @param uri 视频URI
+     * @param context context
+     * @param uri video URI
      */
     fun selectVideo(context: Context, uri: Uri?) {
-        // 获取全局Application上下文
+        // Use the application context
         val appContext = context.applicationContext
-        // 释放旧缩略图内存
+        // Release the previous thumbnail bitmap
         _videoMetadata.value?.thumbnail?.let { bitmap ->
             if (!bitmap.isRecycled) bitmap.recycle()
         }
         _videoMetadata.value = null
-        // 更新当前选中的视频URI
+        // Update the selected video URI
         _selectedUri.value = uri
-        // 更新状态为空闲
+        // Reset the state to idle
         _state.value = ExtractionState.Idle
-        // 如果视频URI为空
+        // If the video URI is null
         if (uri == null) {
-            // 清空缓存的源编码
+            // Clear the cached source codec
             cachedSourceCodec = null
             return
         }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                // 获取Pair(源编码名, 推荐输出格式)
+                // Get Pair(source codec name, suggested output format)
                 val detected = detectAudio(appContext, uri)
-                // 更新缓存的源编码
+                // Update the cached source codec
                 cachedSourceCodec = detected?.first
-                // 如果检测到音频编码
+                // If an audio codec was detected
                 if (detected != null) {
-                    // 更新当前选定的输出格式
+                    // Update the selected output format
                     _selectedFormat.value = detected.second
                 }
-                // 提取视频元数据
+                // Extracts video metadata
                 val metadata = extractVideoMetadata(appContext, uri, detected?.first)
                 _videoMetadata.value = metadata
             }
@@ -166,21 +166,21 @@ class MainViewModel : ViewModel() {
     }
 
     /**
-     * 提取视频元数据
+     * Extracts video metadata
      *
-     * @param context 上下文
-     * @param uri 视频URI
-     * @param audioCodec 音频编码
-     * @return 视频元数据
+     * @param context context
+     * @param uri video URI
+     * @param audioCodec audio codec
+     * @return video metadata
      */
     private fun extractVideoMetadata(
         context: Context,
         uri: Uri,
         audioCodec: String?,
     ): VideoMetadata {
-        // 获取文件大小
+        // Get the file size
         val fileSize = resolveFileSize(context, uri)
-        // 获取时长和缩略图
+        // Get duration and thumbnail
         var durationMs = 0L
         var thumbnail: Bitmap? = null
         val retriever = MediaMetadataRetriever()
@@ -191,11 +191,11 @@ class MainViewModel : ViewModel() {
             )?.toLongOrNull() ?: 0L
             thumbnail = extractThumbnail(retriever, durationMs)
         } catch (e: Exception) {
-            Log.w("AudioPeel", "提取视频元数据失败: ${e.message}", e)
+            Log.w("AudioPeel", "Failed to extract video metadata: ${e.message}", e)
         } finally {
             runCatching { retriever.release() }.onFailure {
                 Log.w(
-                    "AudioPeel", "释放 MediaMetadataRetriever 失败", it
+                    "AudioPeel", "Failed to release MediaMetadataRetriever", it
                 )
             }
         }
@@ -208,11 +208,11 @@ class MainViewModel : ViewModel() {
     }
 
     /**
-     * 解析文件大小
+     * Resolves the file size
      *
-     * @param context 上下文
-     * @param uri 视频URI
-     * @return 文件大小
+     * @param context context
+     * @param uri video URI
+     * @return file size
      */
     private fun resolveFileSize(context: Context, uri: Uri): Long {
         return runCatching {
@@ -220,40 +220,40 @@ class MainViewModel : ViewModel() {
                 pfd.statSize.takeIf { it > 0 } ?: 0L
             } ?: 0L
         }.onFailure {
-            Log.d("AudioPeel", "获取文件大小失败: ${it.message}")
+            Log.d("AudioPeel", "Failed to get file size: ${it.message}")
         }.getOrDefault(0L)
     }
 
     /**
-     * 提取视频缩略图
+     * Extracts a video thumbnail
      *
-     * @param retriever 媒体元数据提取器
-     * @param durationMs 视频总时长毫秒
-     * @return 缩略图
+     * @param retriever media metadata retriever
+     * @param durationMs total video duration in milliseconds
+     * @return thumbnail
      */
     private fun extractThumbnail(retriever: MediaMetadataRetriever, durationMs: Long): Bitmap? {
-        // 获取帧时间
+        // Pick the frame time
         val frameTimeUs = if (durationMs >= 1000L) 1_000_000L else 0L
-        // 获取原始缩略图
+        // Get the full-size frame
         val original =
             retriever.getFrameAtTime(frameTimeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: return null
-        // 计算缩略图目标尺寸
+        // Calculates the target thumbnail size
         val (targetW, targetH) = computeThumbnailSize(original.width, original.height)
-        // 原图尺寸已足够小则直接返回
+        // Return the original if it is already small enough
         if (original.width <= targetW && original.height <= targetH) return original
-        // 缩放缩略图
+        // Scale the thumbnail
         return original.scale(targetW, targetH).also {
             if (it !== original) original.recycle()
         }
     }
 
     /**
-     * 计算缩略图目标尺寸
+     * Calculates the target thumbnail size
      *
-     * @param width 原始宽度
-     * @param height 原始高度
-     * @return Pair(目标宽度, 目标高度)
+     * @param width original width
+     * @param height original height
+     * @return Pair(target width, target height)
      */
     private fun computeThumbnailSize(width: Int, height: Int): Pair<Int, Int> {
         val longSide = maxOf(width, height)
@@ -265,25 +265,25 @@ class MainViewModel : ViewModel() {
     }
 
     /**
-     * 选择输出格式
+     * Selects the output format
      *
-     * @param format 输出格式
+     * @param format output format
      */
     fun selectFormat(format: OutputFormat) {
         _selectedFormat.value = format
     }
 
     /**
-     * 提取音频
+     * Extracts audio
      *
-     * @param context 上下文
+     * @param context context
      */
     fun extractAudio(context: Context) {
-        // 获取全局Application上下文
+        // Use the application context
         val appContext = context.applicationContext
         val uri = _selectedUri.value ?: return
         if (_state.value is ExtractionState.Processing) return
-        // 获取当前选定的输出格式
+        // Get the currently selected output format
         val format = _selectedFormat.value
         cancelRequested = false
         lastProgressUpdate = 0L
@@ -292,21 +292,21 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 try {
-                    // 构建输出路径
+                    // Build the output path
                     val outDir = appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
                         ?: appContext.cacheDir
-                    // 清理之前提取的音频文件
+                    // Clean up previously extracted audio files
                     outDir.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
-                    // 生成唯一文件名
+                    // Generate a unique file name
                     val timeStamp = SimpleDateFormat(
                         "yyyyMMdd_HHmmss", Locale.getDefault()
                     ).format(Date())
                     val fileName = "audio_${timeStamp}.${format.extension}"
                     val outFile = File(outDir, fileName)
                     val outPath = outFile.absolutePath
-                    // 使用Android原生API获取媒体信息
+                    // Get media info using the native Android APIs
                     var totalDurationMs = 0L
-                    // 获取时长
+                    // Get the duration
                     val retriever = MediaMetadataRetriever()
                     try {
                         retriever.setDataSource(appContext, uri)
@@ -314,28 +314,28 @@ class MainViewModel : ViewModel() {
                             MediaMetadataRetriever.METADATA_KEY_DURATION
                         )?.toLongOrNull() ?: 0L
                     } catch (e: Exception) {
-                        Log.w("AudioPeel", "获取时长失败: ${e.message}", e)
+                        Log.w("AudioPeel", "Failed to get duration: ${e.message}", e)
                     } finally {
                         runCatching { retriever.release() }.onFailure {
                             Log.w(
-                                "AudioPeel", "释放 MediaMetadataRetriever 失败", it
+                                "AudioPeel", "Failed to release MediaMetadataRetriever", it
                             )
                         }
                     }
-                    // 如果缓存的源编码为空
+                    // If the cached source codec is null
                     if (cachedSourceCodec == null) {
-                        // 探测音频编码并更新缓存的源编码
+                        // Probe the audio codec and update the cached source codec
                         cachedSourceCodec = detectAudio(appContext, uri)?.first
                     }
-                    // 获取缓存的源编码
+                    // Get the cached source codec
                     val sourceAudioCodec = cachedSourceCodec.orEmpty()
-                    // 将 content URI 转为 FFmpeg 可读的 SAF 输入参数
+                    // Convert the content URI into an SAF input FFmpeg can read
                     val safInput = FFmpegKitConfig.getSafParameterForRead(appContext, uri)
-                    // 限制线程数在1-4之间
+                    // Limit the thread count to 1-4
                     val threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
-                    // 构建ffmpeg命令
+                    // Build the ffmpeg command
                     val base = "-y -nostdin -i $safInput -vn -threads $threads"
-                    // 源编码与目标格式兼容则复制音轨否则按所选格式转码
+                    // Copy the audio stream if the source codec matches the target format, otherwise transcode
                     val cmd = when (format) {
                         OutputFormat.MP3 -> {
                             if (sourceAudioCodec == "mp3") {
@@ -368,10 +368,10 @@ class MainViewModel : ViewModel() {
                             }
                         }
                     }
-                    // 执行异步提取
-                    Log.d("AudioPeel", "FFmpeg命令: $cmd")
+                    // Run the extraction asynchronously
+                    Log.d("AudioPeel", "FFmpeg command: $cmd")
                     val session = FFmpegKit.executeAsync(cmd, { currentSession ->
-                        // 完成回调
+                        // Completion callback
                         val returnCode = currentSession.returnCode
                         val cancelled = cancelRequested || ReturnCode.isCancel(returnCode)
                         currentSessionId = null
@@ -387,14 +387,14 @@ class MainViewModel : ViewModel() {
                             val logs = currentSession.allLogsAsString
                             Log.e("AudioPeel", "FFmpeg Error $returnCode: $logs")
                             if (outFile.exists()) {
-                                // 删除生成的不完整缓存文件
+                                // Delete the incomplete output file
                                 outFile.delete()
                             }
                             _state.value =
                                 ExtractionState.Error(messageResId = R.string.extraction_failed)
                         }
                     }, { _ -> }, { statistics ->
-                        // 进度回调
+                        // Progress callback
                         if (totalDurationMs > 0) {
                             val now = System.currentTimeMillis()
                             if (now - lastProgressUpdate >= 200) {
@@ -427,7 +427,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    /* 取消提取 */
+    /* Cancels the extraction */
     fun cancelExtraction() {
         if (_state.value !is ExtractionState.Processing) return
         cancelRequested = true
@@ -439,11 +439,11 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    /* ViewModel销毁时取消提取 */
+    /* Cancel extraction when the ViewModel is cleared */
     override fun onCleared() {
         super.onCleared()
         cancelExtraction()
-        // 释放缩略图内存
+        // Release the thumbnail bitmap
         _videoMetadata.value?.thumbnail?.let { bitmap ->
             if (!bitmap.isRecycled) bitmap.recycle()
         }

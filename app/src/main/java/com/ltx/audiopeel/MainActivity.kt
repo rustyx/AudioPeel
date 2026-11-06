@@ -42,7 +42,7 @@ import com.ltx.audiopeel.utils.saveToDownloads
 import com.ltx.audiopeel.utils.shareFile
 
 /**
- * 主活动
+ * Main activity
  *
  * @author tianxing
  */
@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * 音频提取应用主入口
+ * Main entry point of the audio extraction UI
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,7 +74,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
     val selectedFormat by viewModel.selectedFormat.collectAsState()
     val videoMetadata by viewModel.videoMetadata.collectAsState()
     var fullscreenThumbnail by remember { mutableStateOf<Bitmap?>(null) }
-    // 视频选择器
+    // Video picker
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -82,7 +82,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
             viewModel.selectVideo(context, uri)
         }
     }
-    // 应用主布局
+    // Main app layout
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold { paddingValues ->
             Column(
@@ -94,7 +94,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 视频选择卡片
+                // Video selection card
                 VideoSelectorCard(
                     isSelected = selectedUri != null,
                     videoMetadata = videoMetadata,
@@ -105,7 +105,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                         fullscreenThumbnail = bitmap
                     })
                 Spacer(modifier = Modifier.height(10.dp))
-                // 输出格式与提取控制
+                // Output format and extraction controls
                 FormatSelectorSection(
                     visible = selectedUri != null,
                     selectedFormat = selectedFormat,
@@ -114,7 +114,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                     onExtractClick = { viewModel.extractAudio(context) },
                     onCancelClick = { viewModel.cancelExtraction() })
                 Spacer(modifier = Modifier.height(10.dp))
-                // 提取结果
+                // Extraction result
                 ExtractionResultSection(
                     extractionState = state,
                     onShareClick = { file, name -> shareFile(context, file, name) },
@@ -122,7 +122,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                     onOpenFolderClick = { openMusicFolder(context) })
             }
         }
-        // 全屏缩略图预览
+        // Fullscreen thumbnail preview
         fullscreenThumbnail?.let { bitmap ->
             FullscreenThumbnailOverlay(
                 bitmap = bitmap,

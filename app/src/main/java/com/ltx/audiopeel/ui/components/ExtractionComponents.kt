@@ -73,13 +73,13 @@ import com.ltx.audiopeel.VideoMetadata
 import java.io.File
 
 /**
- * 视频选择卡片
+ * Video selection card
  *
- * @param isSelected 是否已选择视频
- * @param videoMetadata 视频元数据
- * @param onSelectClick 选择视频按钮点击事件
- * @param modifier 修饰符
- * @param onThumbnailClick 缩略图点击事件
+ * @param isSelected whether a video is selected
+ * @param videoMetadata video metadata
+ * @param onSelectClick select-video button callback
+ * @param modifier modifier
+ * @param onThumbnailClick thumbnail click callback
  */
 @Composable
 fun VideoSelectorCard(
@@ -140,10 +140,10 @@ fun VideoSelectorCard(
 }
 
 /**
- * 视频缩略图
+ * Video thumbnail
  *
- * @param bitmap 视频缩略图
- * @param onClick 点击事件
+ * @param bitmap video thumbnail
+ * @param onClick click callback
  */
 @Composable
 private fun VideoThumbnail(
@@ -172,19 +172,19 @@ private fun VideoThumbnail(
 }
 
 /**
- * 全屏缩略图预览覆盖层
+ * Fullscreen thumbnail preview overlay
  *
- * @param bitmap 视频缩略图
- * @param onDismiss 关闭事件
+ * @param bitmap video thumbnail
+ * @param onDismiss dismiss callback
  */
 @Composable
 fun FullscreenThumbnailOverlay(
     bitmap: Bitmap,
     onDismiss: () -> Unit,
 ) {
-    // 拦截系统返回键
+    // Intercept the system back button
     BackHandler(enabled = true, onBack = onDismiss)
-    // 隐藏系统栏
+    // Hide the system bars
     val view = LocalView.current
     DisposableEffect(view) {
         val window = (view.context as? Activity)?.window
@@ -192,7 +192,7 @@ fun FullscreenThumbnailOverlay(
             WindowCompat.getInsetsController(it, view)
         }
         controller?.apply {
-            // 允许用户滑动短暂显示系统栏
+            // Let the user swipe to reveal the system bars temporarily
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
         }
@@ -219,10 +219,10 @@ fun FullscreenThumbnailOverlay(
 }
 
 /**
- * 视频信息行
+ * Video info row
  *
- * @param metadata 视频元数据
- * @param modifier 修饰符
+ * @param metadata video metadata
+ * @param modifier modifier
  */
 @Composable
 private fun VideoInfoRow(
@@ -254,9 +254,9 @@ private fun VideoInfoRow(
 }
 
 /**
- * 格式化时长
+ * Formats a duration
  *
- * @param ms 毫秒
+ * @param ms milliseconds
  */
 private fun formatDuration(ms: Long): String {
     if (ms <= 0) return "00:00"
@@ -272,9 +272,9 @@ private fun formatDuration(ms: Long): String {
 }
 
 /**
- * 格式化文件大小
+ * Formats a file size
  *
- * @param bytes 字节
+ * @param bytes size in bytes
  */
 private fun formatFileSize(bytes: Long): String {
     return when {
@@ -286,15 +286,15 @@ private fun formatFileSize(bytes: Long): String {
 }
 
 /**
- * 格式选择与提取操作区
+ * Format selection and extraction controls
  *
- * @param visible 是否可见
- * @param selectedFormat 当前选中的格式
- * @param extractionState 提取状态
- * @param onFormatSelect 选中格式事件
- * @param onExtractClick 提取音频事件
- * @param onCancelClick 取消提取事件
- * @param modifier 修饰符
+ * @param visible whether the section is visible
+ * @param selectedFormat currently selected format
+ * @param extractionState extraction state
+ * @param onFormatSelect format selection callback
+ * @param onExtractClick extract callback
+ * @param onCancelClick cancel callback
+ * @param modifier modifier
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -328,7 +328,7 @@ fun FormatSelectorSection(
                         label = { Text(format.name) })
                 }
             }
-            // 提取音频按钮
+            // Extract audio button
             Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = onExtractClick,
@@ -358,7 +358,7 @@ fun FormatSelectorSection(
                     )
                 }
             }
-            // 取消提取按钮
+            // Cancel extraction button
             AnimatedVisibility(
                 visible = extractionState is ExtractionState.Processing,
                 enter = fadeIn(),
@@ -384,13 +384,13 @@ fun FormatSelectorSection(
 }
 
 /**
- * 提取结果显示区
+ * Extraction result section
  *
- * @param extractionState 提取状态
- * @param onShareClick 分享事件
- * @param onSaveClick 保存事件
- * @param onOpenFolderClick 打开文件夹事件
- * @param modifier 修饰符
+ * @param extractionState extraction state
+ * @param onShareClick share callback
+ * @param onSaveClick save callback
+ * @param onOpenFolderClick open-folder callback
+ * @param modifier modifier
  */
 @Composable
 fun ExtractionResultSection(
@@ -430,13 +430,13 @@ fun ExtractionResultSection(
 }
 
 /**
- * 提取成功卡片
+ * Extraction success card
  *
- * @param outPath 输出路径
- * @param onShareClick 分享事件
- * @param onSaveClick 保存事件
- * @param onOpenFolderClick 打开文件夹事件
- * @param modifier 修饰符
+ * @param outPath output path
+ * @param onShareClick share callback
+ * @param onSaveClick save callback
+ * @param onOpenFolderClick open-folder callback
+ * @param modifier modifier
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -470,7 +470,7 @@ fun ExtractionSuccessCard(
             Text(stringResource(R.string.extraction_success), fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
             val isNameValid = customFileName.trim().isNotEmpty()
-            // 自定义文件名输入框
+            // Custom file name input
             OutlinedTextField(
                 value = customFileName,
                 onValueChange = { customFileName = it },
@@ -497,10 +497,10 @@ fun ExtractionSuccessCard(
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
-            // 音频播放器
+            // Audio player
             AudioPlayerView(outPath)
             Spacer(modifier = Modifier.height(12.dp))
-            // 分享和保存按钮
+            // Share and save buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -544,10 +544,10 @@ fun ExtractionSuccessCard(
 }
 
 /**
- * 提取失败卡片
+ * Extraction failure card
  *
- * @param message 错误信息
- * @param modifier 修饰符
+ * @param message error message
+ * @param modifier modifier
  */
 @Composable
 fun ExtractionFailedCard(

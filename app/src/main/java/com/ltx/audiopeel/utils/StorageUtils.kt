@@ -13,11 +13,11 @@ import com.ltx.audiopeel.R
 import java.io.File
 
 /**
- * 分享文件
+ * Shares a file
  *
- * @param context 上下文
- * @param file 要分享的文件
- * @param customName 自定义文件名
+ * @param context context
+ * @param file file to share
+ * @param customName custom file name
  */
 fun shareFile(context: Context, file: File, customName: String) {
     try {
@@ -29,7 +29,7 @@ fun shareFile(context: Context, file: File, customName: String) {
             file.copyTo(renamedFile, overwrite = true)
             fileToShare = renamedFile
         }
-        // 处理Android Q及以上版本的文件分享
+        // Handle sharing on Android Q and later
         val uri =
             FileProvider.getUriForFile(context, "${context.packageName}.provider", fileToShare)
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -48,17 +48,17 @@ fun shareFile(context: Context, file: File, customName: String) {
 }
 
 /**
- * 保存文件到下载文件夹
+ * Saves a file to the Music/AudioPeel folder
  *
- * @param context 上下文
- * @param file 要保存的文件
- * @param customName 自定义文件名
+ * @param context context
+ * @param file file to save
+ * @param customName custom file name
  */
 fun saveToDownloads(context: Context, file: File, customName: String) {
     try {
         val finalName = customName.takeIf { it.endsWith(".${file.extension}") }
             ?: "$customName.${file.extension}"
-        // 处理Android Q及以上版本的文件保存
+        // Handle saving on Android Q and later
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = android.content.ContentValues().apply {
                 put(MediaStore.Audio.Media.DISPLAY_NAME, finalName)
@@ -78,7 +78,7 @@ fun saveToDownloads(context: Context, file: File, customName: String) {
                         }
                     }
                 } catch (e: Exception) {
-                    // 删除失败的文件
+                    // Delete the partially written file
                     try {
                         context.contentResolver.delete(uri, null, null)
                     } catch (ex: Exception) {
@@ -108,14 +108,14 @@ fun saveToDownloads(context: Context, file: File, customName: String) {
 }
 
 /**
- * 打开音乐文件夹
+ * Opens the music folder
  *
- * @param context 上下文
+ * @param context context
  */
 fun openMusicFolder(context: Context) {
     try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // 直接打开Music/AudioPeel目录
+            // Open the Music/AudioPeel directory directly
             val musicUri = DocumentsContract.buildDocumentUri(
                 "com.android.externalstorage.documents",
                 "primary:${Environment.DIRECTORY_MUSIC}/AudioPeel"
