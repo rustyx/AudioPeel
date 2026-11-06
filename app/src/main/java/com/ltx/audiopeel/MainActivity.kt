@@ -38,7 +38,7 @@ import com.ltx.audiopeel.ui.components.FullscreenThumbnailOverlay
 import com.ltx.audiopeel.ui.components.VideoSelectorCard
 import com.ltx.audiopeel.ui.theme.AudioPeelTheme
 import com.ltx.audiopeel.utils.openMusicFolder
-import com.ltx.audiopeel.utils.saveToDownloads
+import com.ltx.audiopeel.utils.saveToMusic
 import com.ltx.audiopeel.utils.shareFile
 
 /**
@@ -118,7 +118,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                 ExtractionResultSection(
                     extractionState = state,
                     onShareClick = { file, name -> shareFile(context, file, name) },
-                    onSaveClick = { file, name -> saveToDownloads(context, file, name) },
+                    onSaveClick = { file, name -> saveToMusic(context, file, name) },
                     onOpenFolderClick = { openMusicFolder(context) })
             }
         }

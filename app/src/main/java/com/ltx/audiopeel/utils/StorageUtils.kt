@@ -54,7 +54,7 @@ fun shareFile(context: Context, file: File, customName: String) {
  * @param file file to save
  * @param customName custom file name
  */
-fun saveToDownloads(context: Context, file: File, customName: String) {
+fun saveToMusic(context: Context, file: File, customName: String) {
     try {
         val finalName = customName.takeIf { it.endsWith(".${file.extension}") }
             ?: "$customName.${file.extension}"
