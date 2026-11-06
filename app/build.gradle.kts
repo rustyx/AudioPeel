@@ -6,6 +6,14 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Release signing is configured outside the repo, in ~/.gradle/gradle.properties or
+// via ORG_GRADLE_PROJECT_<name> environment variables (e.g. on CI):
+//   AUDIOPEEL_STORE_FILE, AUDIOPEEL_STORE_PASSWORD, AUDIOPEEL_KEY_ALIAS, AUDIOPEEL_KEY_PASSWORD
+// If any is missing, release builds are produced unsigned.
+val releaseSigning = listOf("STORE_FILE", "STORE_PASSWORD", "KEY_ALIAS", "KEY_PASSWORD")
+    .associateWith { providers.gradleProperty("AUDIOPEEL_$it").orNull.orEmpty() }
+    .takeIf { props -> props.values.none { it.isBlank() } }
+
 android {
     namespace = "com.ltx.audiopeel"
     compileSdk = 37
@@ -20,8 +28,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseSigning != null) {
+            create("release") {
+                storeFile = file(releaseSigning.getValue("STORE_FILE"))
+                storePassword = releaseSigning.getValue("STORE_PASSWORD")
+                keyAlias = releaseSigning.getValue("KEY_ALIAS")
+                keyPassword = releaseSigning.getValue("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
