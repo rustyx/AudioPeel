@@ -41,7 +41,7 @@
 
 ## 截图展示
 
-![](art/screenshot.png)
+![](art/screenshot_zh.png)
 
 ## 技术栈与架构
 
