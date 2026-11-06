@@ -63,6 +63,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    androidResources {
+        // Lets users pick the app language in system settings on Android 13+.
+        generateLocaleConfig = true
+        // Ship only the locales the app is translated into, so library strings
+        // don't appear in a third language and the APK stays smaller.
+        localeFilters += listOf("en", "zh", "b+zh+Hant")
+    }
     buildFeatures {
         compose = true
     }
