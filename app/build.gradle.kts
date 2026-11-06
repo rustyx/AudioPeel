@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "com.ltx.audiopeel"
     compileSdk = 37
+    compileSdkMinor = 0
 
     defaultConfig {
         applicationId = "com.ltx.audiopeel"
