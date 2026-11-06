@@ -1,0 +1,6 @@
+# Normalize line endings; keep shell scripts LF and batch files CRLF on every OS.
+* text=auto
+/gradlew text eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.png binary
