@@ -73,6 +73,7 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
     val selectedUri by viewModel.selectedUri.collectAsState()
     val selectedFormat by viewModel.selectedFormat.collectAsState()
     val videoMetadata by viewModel.videoMetadata.collectAsState()
+    val endEdits by viewModel.endEdits.collectAsState()
     var fullscreenThumbnail by remember { mutableStateOf<Bitmap?>(null) }
     // Video picker
     val launcher = rememberLauncherForActivityResult(
@@ -111,6 +112,9 @@ fun AudioExtractorApp(viewModel: MainViewModel = viewModel()) {
                     selectedFormat = selectedFormat,
                     extractionState = state,
                     onFormatSelect = { viewModel.selectFormat(it) },
+                    endEdits = endEdits,
+                    onEndEditEnabledChange = viewModel::setEndEditEnabled,
+                    onEndEditSecondsChange = viewModel::setEndEditSeconds,
                     onExtractClick = { viewModel.extractAudio(context) },
                     onCancelClick = { viewModel.cancelExtraction() })
                 Spacer(modifier = Modifier.height(10.dp))

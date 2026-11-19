@@ -29,4 +29,11 @@
     <string name="duration_label">时长：%1$s</string>
     <string name="audio_codec_label">音轨编码：%1$s</string>
     <string name="file_size_label">大小：%1$s</string>
+    <string name="cut_end">裁剪结尾</string>
+    <string name="fade_out_end">结尾淡出</string>
+    <string name="seconds_unit">秒</string>
+    <string name="end_edit_seconds_range">请输入 %1$d–%2$d 秒</string>
+    <string name="error_end_edit_seconds_invalid">请输入有效的结尾裁剪和淡出时长</string>
+    <string name="error_end_edit_unknown_duration">无法获取音频时长，无法裁剪结尾或淡出</string>
+    <string name="error_end_edit_cut_too_long">裁剪时长超过了音频时长</string>
 </resources>

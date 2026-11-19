@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -43,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,12 +62,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.ltx.audiopeel.EndEditKind
+import com.ltx.audiopeel.EndEditOption
+import com.ltx.audiopeel.EndEditSettings
 import com.ltx.audiopeel.ExtractionState
 import com.ltx.audiopeel.OutputFormat
 import com.ltx.audiopeel.R
@@ -292,6 +299,9 @@ private fun formatFileSize(bytes: Long): String {
  * @param selectedFormat currently selected format
  * @param extractionState extraction state
  * @param onFormatSelect format selection callback
+ * @param endEdits end edit settings
+ * @param onEndEditEnabledChange end edit on/off callback
+ * @param onEndEditSecondsChange end edit length callback
  * @param onExtractClick extract callback
  * @param onCancelClick cancel callback
  * @param modifier modifier
@@ -303,6 +313,9 @@ fun FormatSelectorSection(
     selectedFormat: OutputFormat,
     extractionState: ExtractionState,
     onFormatSelect: (OutputFormat) -> Unit,
+    endEdits: EndEditSettings,
+    onEndEditEnabledChange: (EndEditKind, Boolean) -> Unit,
+    onEndEditSecondsChange: (EndEditKind, String) -> Unit,
     onExtractClick: () -> Unit,
     onCancelClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -328,15 +341,23 @@ fun FormatSelectorSection(
                         label = { Text(format.name) })
                 }
             }
+            // End edits
+            Spacer(modifier = Modifier.height(12.dp))
+            EndEditsSection(
+                settings = endEdits,
+                enabled = extractionState !is ExtractionState.Processing,
+                onEnabledChange = onEndEditEnabledChange,
+                onSecondsChange = onEndEditSecondsChange
+            )
             // Extract audio button
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = onExtractClick,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(16.dp),
-                enabled = extractionState !is ExtractionState.Processing
+                enabled = extractionState !is ExtractionState.Processing && endEdits.isValid
             ) {
                 if (extractionState is ExtractionState.Processing) {
                     val progressFloat = extractionState.progress
@@ -379,6 +400,102 @@ fun FormatSelectorSection(
                     Text(stringResource(R.string.cancel_extraction))
                 }
             }
+        }
+    }
+}
+
+/**
+ * Options for editing the end of the audio
+ *
+ * @param settings end edit settings
+ * @param enabled whether the options can be changed
+ * @param onEnabledChange end edit on/off callback
+ * @param onSecondsChange end edit length callback
+ * @param modifier modifier
+ */
+@Composable
+private fun EndEditsSection(
+    settings: EndEditSettings,
+    enabled: Boolean,
+    onEnabledChange: (EndEditKind, Boolean) -> Unit,
+    onSecondsChange: (EndEditKind, String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        // Listed in the order they are applied: the fade covers the end of what remains
+        EndEditKind.entries.forEach { kind ->
+            EndEditOptionRow(
+                label = stringResource(
+                    when (kind) {
+                        EndEditKind.CUT_END -> R.string.cut_end
+                        EndEditKind.FADE_OUT -> R.string.fade_out_end
+                    }
+                ),
+                option = settings[kind],
+                enabled = enabled,
+                onEnabledChange = { onEnabledChange(kind, it) },
+                onSecondsChange = { onSecondsChange(kind, it) }
+            )
+        }
+    }
+}
+
+/**
+ * A single end edit: a switch and its length in seconds
+ *
+ * @param label option label
+ * @param option current option
+ * @param enabled whether the option can be changed
+ * @param onEnabledChange on/off callback
+ * @param onSecondsChange length callback
+ */
+@Composable
+private fun EndEditOptionRow(
+    label: String,
+    option: EndEditOption,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onSecondsChange: (String) -> Unit,
+) {
+    val showError = option.enabled && option.seconds == null
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = option.secondsText,
+                onValueChange = onSecondsChange,
+                enabled = enabled && option.enabled,
+                isError = showError,
+                singleLine = true,
+                suffix = { Text(stringResource(R.string.seconds_unit)) },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number, imeAction = ImeAction.Done
+                ),
+                modifier = Modifier.width(104.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = option.enabled, onCheckedChange = onEnabledChange, enabled = enabled
+            )
+        }
+        if (showError) {
+            Text(
+                text = stringResource(
+                    R.string.end_edit_seconds_range,
+                    EndEditOption.MIN_SECONDS,
+                    EndEditOption.MAX_SECONDS
+                ),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.End
+            )
         }
     }
 }

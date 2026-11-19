@@ -29,4 +29,11 @@
     <string name="duration_label">Duration: %1$s</string>
     <string name="audio_codec_label">Audio codec: %1$s</string>
     <string name="file_size_label">Size: %1$s</string>
+    <string name="cut_end">Cut end</string>
+    <string name="fade_out_end">Fade out end</string>
+    <string name="seconds_unit">s</string>
+    <string name="end_edit_seconds_range">Allowed range: %1$d–%2$d s</string>
+    <string name="error_end_edit_seconds_invalid">Enter a valid length for the end cut and fade</string>
+    <string name="error_end_edit_unknown_duration">The audio length is unknown, so its end can\'t be cut or faded</string>
+    <string name="error_end_edit_cut_too_long">The cut is longer than the audio</string>
 </resources>

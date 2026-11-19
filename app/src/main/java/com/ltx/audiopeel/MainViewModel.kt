@@ -1,5 +1,6 @@
 package com.ltx.audiopeel
 
+import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaExtractor
@@ -9,11 +10,12 @@ import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import androidx.core.graphics.scale
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.ReturnCode
+import com.ltx.audiopeel.utils.EndEditSettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +46,19 @@ sealed class ExtractionState {
 }
 
 /**
+ * Audio track found in the video
+ *
+ * @param codec internal codec name
+ * @param recommendedFormat suggested output format
+ * @param durationMs track duration, or 0 if unknown
+ */
+private data class AudioTrackInfo(
+    val codec: String,
+    val recommendedFormat: OutputFormat,
+    val durationMs: Long,
+)
+
+/**
  * Video metadata
  */
 data class VideoMetadata(
@@ -56,7 +71,7 @@ data class VideoMetadata(
 /**
  * Main view model
  */
-class MainViewModel : ViewModel() {
+class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow<ExtractionState>(ExtractionState.Idle)
     val state: StateFlow<ExtractionState> = _state.asStateFlow()
     private val _selectedUri = MutableStateFlow<Uri?>(null)
@@ -65,7 +80,10 @@ class MainViewModel : ViewModel() {
     val selectedFormat: StateFlow<OutputFormat> = _selectedFormat.asStateFlow()
     private val _videoMetadata = MutableStateFlow<VideoMetadata?>(null)
     val videoMetadata: StateFlow<VideoMetadata?> = _videoMetadata.asStateFlow()
-    private var cachedSourceCodec: String? = null
+    private val endEditStore = EndEditSettingsStore(application)
+    private val _endEdits = MutableStateFlow(endEditStore.load())
+    val endEdits: StateFlow<EndEditSettings> = _endEdits.asStateFlow()
+    private var cachedAudioTrack: AudioTrackInfo? = null
     private var lastProgressUpdate = 0L
 
     @Volatile
@@ -77,9 +95,9 @@ class MainViewModel : ViewModel() {
     /**
      * Probes the audio codec embedded in the video
      *
-     * @return Pair(source codec name, suggested output format)
+     * @return the first audio track, or null if there is none
      */
-    private fun detectAudio(context: Context, uri: Uri): Pair<String, OutputFormat>? {
+    private fun detectAudio(context: Context, uri: Uri): AudioTrackInfo? {
         // Create the media extractor
         val extractor = MediaExtractor()
         try {
@@ -88,7 +106,8 @@ class MainViewModel : ViewModel() {
             // Iterate over all tracks
             for (i in 0 until extractor.trackCount) {
                 // Get the track format
-                val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
+                val trackFormat = extractor.getTrackFormat(i)
+                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: continue
                 // Check whether it is an audio track
                 if (!mime.startsWith("audio/")) continue
                 // Map the full MIME type to an internal codec name
@@ -109,7 +128,13 @@ class MainViewModel : ViewModel() {
                     "vorbis", "opus" -> OutputFormat.OGG
                     else -> OutputFormat.M4A
                 }
-                return codec to recommended
+                // The track duration is more accurate than the container's
+                val durationMs = if (trackFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                    trackFormat.getLong(MediaFormat.KEY_DURATION) / 1000
+                } else {
+                    0L
+                }
+                return AudioTrackInfo(codec, recommended, durationMs)
             }
         } catch (e: Exception) {
             Log.w("AudioPeel", "Failed to detect audio codec: ${e.message}", e)
@@ -143,23 +168,23 @@ class MainViewModel : ViewModel() {
         _state.value = ExtractionState.Idle
         // If the video URI is null
         if (uri == null) {
-            // Clear the cached source codec
-            cachedSourceCodec = null
+            // Clear the cached audio track
+            cachedAudioTrack = null
             return
         }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                // Get Pair(source codec name, suggested output format)
+                // Probe the audio track
                 val detected = detectAudio(appContext, uri)
-                // Update the cached source codec
-                cachedSourceCodec = detected?.first
-                // If an audio codec was detected
+                // Update the cached audio track
+                cachedAudioTrack = detected
+                // If an audio track was detected
                 if (detected != null) {
                     // Update the selected output format
-                    _selectedFormat.value = detected.second
+                    _selectedFormat.value = detected.recommendedFormat
                 }
                 // Extracts video metadata
-                val metadata = extractVideoMetadata(appContext, uri, detected?.first)
+                val metadata = extractVideoMetadata(appContext, uri, detected?.codec)
                 _videoMetadata.value = metadata
             }
         }
@@ -274,6 +299,33 @@ class MainViewModel : ViewModel() {
     }
 
     /**
+     * Turns an end edit on or off
+     *
+     * @param kind end edit
+     * @param enabled whether the edit is applied
+     */
+    fun setEndEditEnabled(kind: EndEditKind, enabled: Boolean) {
+        updateEndEdits(kind) { it.copy(enabled = enabled) }
+    }
+
+    /**
+     * Updates the length of an end edit
+     *
+     * @param kind end edit
+     * @param text length in seconds as typed; non-digits are dropped
+     */
+    fun setEndEditSeconds(kind: EndEditKind, text: String) {
+        val digits = text.filter { it in '0'..'9' }.take(EndEditOption.MAX_DIGITS)
+        updateEndEdits(kind) { it.copy(secondsText = digits) }
+    }
+
+    private fun updateEndEdits(kind: EndEditKind, transform: (EndEditOption) -> EndEditOption) {
+        val settings = _endEdits.value.let { it.with(kind, transform(it[kind])) }
+        _endEdits.value = settings
+        endEditStore.save(settings)
+    }
+
+    /**
      * Extracts audio
      *
      * @param context context
@@ -283,8 +335,9 @@ class MainViewModel : ViewModel() {
         val appContext = context.applicationContext
         val uri = _selectedUri.value ?: return
         if (_state.value is ExtractionState.Processing) return
-        // Get the currently selected output format
+        // Get the currently selected output format and end edits
         val format = _selectedFormat.value
+        val endEditSettings = _endEdits.value
         cancelRequested = false
         lastProgressUpdate = 0L
         currentSessionId = null
@@ -322,52 +375,40 @@ class MainViewModel : ViewModel() {
                             )
                         }
                     }
-                    // If the cached source codec is null
-                    if (cachedSourceCodec == null) {
-                        // Probe the audio codec and update the cached source codec
-                        cachedSourceCodec = detectAudio(appContext, uri)?.first
+                    // If the audio track hasn't been probed yet
+                    if (cachedAudioTrack == null) {
+                        // Probe the audio track and cache it
+                        cachedAudioTrack = detectAudio(appContext, uri)
                     }
+                    val audioTrack = cachedAudioTrack
                     // Get the cached source codec
-                    val sourceAudioCodec = cachedSourceCodec.orEmpty()
+                    val sourceAudioCodec = audioTrack?.codec.orEmpty()
+                    // Prefer the audio track's own duration over the container's
+                    val audioDurationMs =
+                        audioTrack?.durationMs?.takeIf { it > 0 } ?: totalDurationMs
+                    // Resolve the end edits against the audio duration
+                    val edits = when (val plan = planEndEdits(endEditSettings, audioDurationMs)) {
+                        is EndEditPlan.Ready -> plan.edits
+                        is EndEditPlan.Failed -> {
+                            _state.value = ExtractionState.Error(messageResId = plan.error.messageResId)
+                            return@withContext
+                        }
+                    }
+                    // Progress is measured against the output length
+                    val progressDurationMs = edits.outputDurationMs ?: totalDurationMs
                     // Convert the content URI into an SAF input FFmpeg can read
                     val safInput = FFmpegKitConfig.getSafParameterForRead(appContext, uri)
                     // Limit the thread count to 1-4
                     val threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
                     // Build the ffmpeg command
-                    val base = "-y -nostdin -i $safInput -vn -threads $threads"
-                    // Copy the audio stream if the source codec matches the target format, otherwise transcode
-                    val cmd = when (format) {
-                        OutputFormat.MP3 -> {
-                            if (sourceAudioCodec == "mp3") {
-                                "$base -c:a copy \"$outPath\""
-                            } else {
-                                "$base -c:a libmp3lame -q:a 2 \"$outPath\""
-                            }
-                        }
-                        OutputFormat.M4A -> {
-                            if (sourceAudioCodec == "aac") {
-                                "$base -c:a copy -f mp4 -movflags +faststart \"$outPath\""
-                            } else {
-                                "$base -c:a aac -b:a 192k -f mp4 -movflags +faststart \"$outPath\""
-                            }
-                        }
-                        OutputFormat.WAV -> "$base -c:a pcm_s16le -ar 44100 \"$outPath\""
-                        OutputFormat.FLAC -> {
-                            if (sourceAudioCodec == "flac") {
-                                "$base -c:a copy \"$outPath\""
-                            } else {
-                                "$base -c:a flac -compression_level 5 \"$outPath\""
-                            }
-                        }
-                        OutputFormat.OGG -> {
-                            when (sourceAudioCodec) {
-                                "vorbis", "opus" ->
-                                    "$base -c:a copy -f ogg \"$outPath\""
-                                else ->
-                                    "$base -c:a libvorbis -q:a 5 \"$outPath\""
-                            }
-                        }
-                    }
+                    val cmd = buildFfmpegCommand(
+                        input = safInput,
+                        outPath = outPath,
+                        format = format,
+                        sourceCodec = sourceAudioCodec,
+                        threads = threads,
+                        edits = edits
+                    )
                     // Run the extraction asynchronously
                     Log.d("AudioPeel", "FFmpeg command: $cmd")
                     val session = FFmpegKit.executeAsync(cmd, { currentSession ->
@@ -395,14 +436,14 @@ class MainViewModel : ViewModel() {
                         }
                     }, { _ -> }, { statistics ->
                         // Progress callback
-                        if (totalDurationMs > 0) {
+                        if (progressDurationMs > 0) {
                             val now = System.currentTimeMillis()
                             if (now - lastProgressUpdate >= 200) {
                                 lastProgressUpdate = now
                                 val timeInMilliseconds = statistics.time
                                 if (timeInMilliseconds > 0) {
                                     val progress =
-                                        (timeInMilliseconds.toFloat() / totalDurationMs.toFloat()).coerceIn(
+                                        (timeInMilliseconds.toFloat() / progressDurationMs.toFloat()).coerceIn(
                                             0f, 1f
                                         )
                                     _state.value = ExtractionState.Processing(progress)
@@ -454,3 +495,13 @@ class MainViewModel : ViewModel() {
         const val THUMBNAIL_MAX_SIZE = 1280
     }
 }
+
+/**
+ * Message shown when the end edits can't be applied
+ */
+private val EndEditError.messageResId: Int
+    get() = when (this) {
+        EndEditError.INVALID_SECONDS -> R.string.error_end_edit_seconds_invalid
+        EndEditError.UNKNOWN_DURATION -> R.string.error_end_edit_unknown_duration
+        EndEditError.CUT_TOO_LONG -> R.string.error_end_edit_cut_too_long
+    }
