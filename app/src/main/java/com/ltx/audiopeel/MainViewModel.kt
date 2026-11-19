@@ -12,20 +12,24 @@ import android.util.Log
 import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
-import com.arthenica.ffmpegkit.ReturnCode
+import com.ltx.audiopeel.extraction.AudioExtractor
+import com.ltx.audiopeel.extraction.ExtractionRequest
+import com.ltx.audiopeel.extraction.ExtractionResult
+import com.ltx.audiopeel.extraction.FfmpegKitRunner
 import com.ltx.audiopeel.utils.EndEditSettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Audio output format
@@ -87,10 +91,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastProgressUpdate = 0L
 
     @Volatile
-    private var currentSessionId: Long? = null
-
-    @Volatile
-    private var cancelRequested = false
+    private var activeRunner: FfmpegKitRunner? = null
 
     /**
      * Probes the audio codec embedded in the video
@@ -338,12 +339,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Get the currently selected output format and end edits
         val format = _selectedFormat.value
         val endEditSettings = _endEdits.value
-        cancelRequested = false
         lastProgressUpdate = 0L
-        currentSessionId = null
+        val runner = FfmpegKitRunner()
+        activeRunner = runner
         _state.value = ExtractionState.Processing(0f)
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
+                // Statistics can arrive late; they mustn't override the final state
+                val finished = AtomicBoolean(false)
                 try {
                     // Build the output path
                     val outDir = appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
@@ -356,36 +359,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ).format(Date())
                     val fileName = "audio_${timeStamp}.${format.extension}"
                     val outFile = File(outDir, fileName)
-                    val outPath = outFile.absolutePath
-                    // Get media info using the native Android APIs
-                    var totalDurationMs = 0L
-                    // Get the duration
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        retriever.setDataSource(appContext, uri)
-                        totalDurationMs = retriever.extractMetadata(
-                            MediaMetadataRetriever.METADATA_KEY_DURATION
-                        )?.toLongOrNull() ?: 0L
-                    } catch (e: Exception) {
-                        Log.w("AudioPeel", "Failed to get duration: ${e.message}", e)
-                    } finally {
-                        runCatching { retriever.release() }.onFailure {
-                            Log.w(
-                                "AudioPeel", "Failed to release MediaMetadataRetriever", it
-                            )
-                        }
-                    }
                     // If the audio track hasn't been probed yet
                     if (cachedAudioTrack == null) {
                         // Probe the audio track and cache it
                         cachedAudioTrack = detectAudio(appContext, uri)
                     }
                     val audioTrack = cachedAudioTrack
-                    // Get the cached source codec
-                    val sourceAudioCodec = audioTrack?.codec.orEmpty()
                     // Prefer the audio track's own duration over the container's
-                    val audioDurationMs =
-                        audioTrack?.durationMs?.takeIf { it > 0 } ?: totalDurationMs
+                    val audioDurationMs = audioTrack?.durationMs?.takeIf { it > 0 }
+                        ?: readContainerDurationMs(appContext, uri)
                     // Resolve the end edits against the audio duration
                     val edits = when (val plan = planEndEdits(endEditSettings, audioDurationMs)) {
                         is EndEditPlan.Ready -> plan.edits
@@ -394,76 +376,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             return@withContext
                         }
                     }
-                    // Progress is measured against the output length
-                    val progressDurationMs = edits.outputDurationMs ?: totalDurationMs
-                    // Convert the content URI into an SAF input FFmpeg can read
-                    val safInput = FFmpegKitConfig.getSafParameterForRead(appContext, uri)
-                    // Limit the thread count to 1-4
-                    val threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
-                    // Build the ffmpeg command
-                    val cmd = buildFfmpegCommand(
-                        input = safInput,
-                        outPath = outPath,
+                    val request = ExtractionRequest(
+                        // Each FFmpeg run needs its own SAF input
+                        input = { FFmpegKitConfig.getSafParameterForRead(appContext, uri) },
+                        outFile = outFile,
                         format = format,
-                        sourceCodec = sourceAudioCodec,
-                        threads = threads,
-                        edits = edits
+                        sourceCodec = audioTrack?.codec.orEmpty(),
+                        // Limit the thread count to 1-4
+                        threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4),
+                        edits = edits,
+                        sourceDurationMs = audioDurationMs
                     )
-                    // Run the extraction asynchronously
-                    Log.d("AudioPeel", "FFmpeg command: $cmd")
-                    val session = FFmpegKit.executeAsync(cmd, { currentSession ->
-                        // Completion callback
-                        val returnCode = currentSession.returnCode
-                        val cancelled = cancelRequested || ReturnCode.isCancel(returnCode)
-                        currentSessionId = null
-                        cancelRequested = false
-                        if (cancelled) {
-                            if (outFile.exists()) {
-                                outFile.delete()
-                            }
-                            _state.value = ExtractionState.Cancelled
-                        } else if (ReturnCode.isSuccess(returnCode)) {
-                            _state.value = ExtractionState.Success(outPath)
-                        } else {
-                            val logs = currentSession.allLogsAsString
-                            Log.e("AudioPeel", "FFmpeg Error $returnCode: $logs")
-                            if (outFile.exists()) {
-                                // Delete the incomplete output file
-                                outFile.delete()
-                            }
-                            _state.value =
-                                ExtractionState.Error(messageResId = R.string.extraction_failed)
-                        }
-                    }, { _ -> }, { statistics ->
-                        // Progress callback
-                        if (progressDurationMs > 0) {
-                            val now = System.currentTimeMillis()
-                            if (now - lastProgressUpdate >= 200) {
-                                lastProgressUpdate = now
-                                val timeInMilliseconds = statistics.time
-                                if (timeInMilliseconds > 0) {
-                                    val progress =
-                                        (timeInMilliseconds.toFloat() / progressDurationMs.toFloat()).coerceIn(
-                                            0f, 1f
-                                        )
-                                    _state.value = ExtractionState.Processing(progress)
-                                }
+                    val extractor = AudioExtractor(
+                        runner = runner,
+                        workDir = File(appContext.cacheDir, EXTRACTION_WORK_DIR),
+                        log = { Log.i("AudioPeel", it) }
+                    )
+                    val result = extractor.extract(request) { progress ->
+                        // Throttle progress updates
+                        val now = System.currentTimeMillis()
+                        if (now - lastProgressUpdate >= 200) {
+                            lastProgressUpdate = now
+                            // Re-checked on retry if the final state was set concurrently
+                            _state.update { current ->
+                                if (finished.get()) current else ExtractionState.Processing(progress)
                             }
                         }
-                    })
-                    currentSessionId = session.sessionId
+                    }
+                    finished.set(true)
+                    val finalState = when (result) {
+                        is ExtractionResult.Success -> {
+                            Log.d("AudioPeel", "Extracted with ${result.method}")
+                            ExtractionState.Success(outFile.absolutePath)
+                        }
+                        ExtractionResult.Cancelled -> ExtractionState.Cancelled
+                        is ExtractionResult.Failed -> {
+                            Log.e("AudioPeel", "FFmpeg error: ${result.details}")
+                            ExtractionState.Error(messageResId = R.string.extraction_failed)
+                        }
+                    }
+                    _state.update { finalState }
                 } catch (e: Exception) {
-                    currentSessionId = null
-                    if (cancelRequested) {
-                        cancelRequested = false
-                        _state.value = ExtractionState.Cancelled
+                    finished.set(true)
+                    _state.value = if (runner.isCancelled) {
+                        ExtractionState.Cancelled
                     } else {
-                        _state.value = ExtractionState.Error(
+                        ExtractionState.Error(
                             message = e.message,
                             messageResId = if (e.message == null) R.string.unknown_error else null
                         )
                     }
+                } finally {
+                    if (activeRunner === runner) activeRunner = null
                 }
+            }
+        }
+    }
+
+    /**
+     * Reads the container duration
+     *
+     * @param context context
+     * @param uri video URI
+     * @return duration in milliseconds, or 0 if unknown
+     */
+    private fun readContainerDurationMs(context: Context, uri: Uri): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+        } catch (e: Exception) {
+            Log.w("AudioPeel", "Failed to get duration: ${e.message}", e)
+            0L
+        } finally {
+            runCatching { retriever.release() }.onFailure {
+                Log.w("AudioPeel", "Failed to release MediaMetadataRetriever", it)
             }
         }
     }
@@ -471,13 +459,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /* Cancels the extraction */
     fun cancelExtraction() {
         if (_state.value !is ExtractionState.Processing) return
-        cancelRequested = true
-        val sessionId = currentSessionId
-        if (sessionId != null) {
-            FFmpegKit.cancel(sessionId)
-        } else {
-            FFmpegKit.cancel()
-        }
+        activeRunner?.cancel()
     }
 
     /* Cancel extraction when the ViewModel is cleared */
@@ -493,6 +475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val THUMBNAIL_MAX_SIZE = 1280
+        const val EXTRACTION_WORK_DIR = "extraction"
     }
 }
 

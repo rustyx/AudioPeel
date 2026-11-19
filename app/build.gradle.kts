@@ -75,6 +75,15 @@ android {
     }
 }
 
+// The FFmpeg integration tests only run when this is set, so it must
+// invalidate earlier test results
+tasks.withType<Test>().configureEach {
+    inputs.property(
+        "ffmpegTestImage",
+        providers.environmentVariable("AUDIOPEEL_TEST_FFMPEG_IMAGE").orElse("")
+    )
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_17
