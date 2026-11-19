@@ -18,7 +18,7 @@
 - **多格式输出** — 支持 MP3 / M4A / WAV / FLAC / OGG
 - **智能推荐** — 自动检测内嵌音频编码并推荐最佳输出格式
 - **快速提取** — 直接读取视频减少拷贝并在编码匹配时流复制音轨以加快提取
-- **结尾裁剪与淡出** — 可选裁掉音频最后几秒并/或在结尾淡出（默认各 12 秒），设置会被记住；淡出需要重新编码音频
+- **结尾裁剪与淡出** — 可选裁掉音频最后几秒并/或在结尾淡出（默认各 12 秒），设置会被记住；AAC-LC 音频导出为 M4A 时通常只重新编码淡出前不久开始的结尾部分，否则重新编码全部音频
 - **进度与取消** — 提供环形进度与百分比显示并支持取消提取
 - **试听预览** — 提取成功后可试听音频
 - **文件管理** — 支持重命名并保存至 `/Music/AudioPeel` 且可打开音频文件夹
@@ -76,6 +76,14 @@
 5. 运行 `Run 'app'` 或执行 `./gradlew assembleDebug`
 
 如需不借助 Android Studio 在命令行编译，请通过 `ANDROID_HOME` 环境变量或 `local.properties` 中的 `sdk.dir=/path/to/Android/Sdk`（该文件不提交）指定 SDK 路径。
+
+### 测试
+
+`./gradlew testDebugUnitTest` 运行单元测试。在 Docker 中调用真实 FFmpeg 的提取测试默认跳过，指定镜像后才会运行，镜像的 FFmpeg 版本最好与 FFmpegKit 内置的一致：
+
+```bash
+AUDIOPEEL_TEST_FFMPEG_IMAGE=jrottenberg/ffmpeg:6.0-alpine ./gradlew testDebugUnitTest
+```
 
 ### 发布签名
 

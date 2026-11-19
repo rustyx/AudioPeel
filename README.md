@@ -18,7 +18,7 @@ A lightweight Android video-to-audio tool that exports to MP3 / M4A / WAV / FLAC
 - **Multiple formats** — Supports MP3 / M4A / WAV / FLAC / OGG
 - **Smart suggestion** — Detects embedded audio codec and suggests a suitable output format
 - **Fast extraction** — Reads the video directly to reduce copying and stream-copies the audio track when codecs match for faster extraction
-- **Ending cut & fade-out** — Optionally cut the last seconds of the audio and/or fade out its end (12 s each by default); the settings are remembered. Fading re-encodes the audio
+- **Ending cut & fade-out** — Optionally cut the last seconds of the audio and/or fade out its end (12 s each by default); the settings are remembered. For M4A from AAC-LC audio usually only the end from shortly before the fade is re-encoded; otherwise all of the audio is
 - **Progress & cancel** — Shows circular progress with percentage and supports canceling extraction
 - **Audio preview** — Preview the extracted audio after extraction succeeds
 - **File management** — Supports renaming and saving to `/Music/AudioPeel` and opening the audio folder
@@ -76,6 +76,14 @@ A lightweight Android video-to-audio tool that exports to MP3 / M4A / WAV / FLAC
 5. Run `Run 'app'` or `./gradlew assembleDebug`
 
 To build from the command line without Android Studio, point Gradle at your SDK via `ANDROID_HOME` or `sdk.dir=/path/to/Android/Sdk` in `local.properties` (not committed).
+
+### Tests
+
+`./gradlew testDebugUnitTest` runs the unit tests. Tests that run the extraction against real FFmpeg in Docker are skipped unless an image is given, ideally the FFmpeg version FFmpegKit bundles:
+
+```bash
+AUDIOPEEL_TEST_FFMPEG_IMAGE=jrottenberg/ffmpeg:6.0-alpine ./gradlew testDebugUnitTest
+```
 
 ### Release signing
 
