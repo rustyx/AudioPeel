@@ -18,6 +18,7 @@ A lightweight Android video-to-audio tool that exports to MP3 / M4A / WAV / FLAC
 - **Multiple formats** — Supports MP3 / M4A / WAV / FLAC / OGG
 - **Smart suggestion** — Detects embedded audio codec and suggests a suitable output format
 - **Fast extraction** — Reads the video directly to reduce copying and stream-copies the audio track when codecs match for faster extraction
+- **Ending cut & fade-out** — Optionally cut the last seconds of the audio and/or fade out its end (12 s each by default); the settings are remembered. Fading re-encodes the audio
 - **Progress & cancel** — Shows circular progress with percentage and supports canceling extraction
 - **Audio preview** — Preview the extracted audio after extraction succeeds
 - **File management** — Supports renaming and saving to `/Music/AudioPeel` and opening the audio folder
