@@ -92,7 +92,7 @@ class FfmpegIntegrationTest {
 
         fun expected(i: Int) = ref[i] * when {
             i / CHANNELS < fadeStart -> 1f
-            else -> (1f - (i / CHANNELS - fadeStart).toFloat() / (end - fadeStart)).coerceAtLeast(0f)
+            else -> fadeOutGain(1.0 - (i / CHANNELS - fadeStart).toDouble() / (end - fadeStart)).toFloat()
         }
 
         fun windowError(from: Int) = sqrt(

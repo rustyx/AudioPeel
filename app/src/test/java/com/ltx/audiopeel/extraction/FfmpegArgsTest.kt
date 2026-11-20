@@ -58,10 +58,18 @@ class FfmpegArgsTest {
             val args = buildSinglePassArgs("in", "/o", format, codec, 1, edits)
             assertFalse(args.toString(), args.contains("copy"))
             val expected = listOf(
-                "-af", "asetpts=PTS-STARTPTS,afade=t=out:st=36.250:d=12.000", "-t", "48.250"
+                "-af", "asetpts=PTS-STARTPTS,afade=t=out:st=36.250:d=12.000:curve=cub", "-t", "48.250"
             )
             assertTrue(args.toString(), Collections.indexOfSubList(args, expected) >= 0)
         }
+    }
+
+    @Test
+    fun fadeGainIsCubic() {
+        assertEquals(1.0, fadeOutGain(1.0), 0.0)
+        assertEquals(0.125, fadeOutGain(0.5), 1e-12)
+        assertEquals(0.0, fadeOutGain(0.0), 0.0)
+        assertEquals(0.0, fadeOutGain(-0.1), 0.0)
     }
 
     @Test
@@ -76,7 +84,7 @@ class FfmpegArgsTest {
                 val args = buildSinglePassArgs("in", "/o.wav", OutputFormat.WAV, "", 4, edits)
                 assertEquals(
                     listOf(
-                        "-threads", "4", "-af", "asetpts=PTS-STARTPTS,afade=t=out:st=0.005:d=5.000",
+                        "-threads", "4", "-af", "asetpts=PTS-STARTPTS,afade=t=out:st=0.005:d=5.000:curve=cub",
                         "-t", "5.005"
                     ),
                     args.subList(base.size, base.size + 6)

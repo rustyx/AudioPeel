@@ -131,7 +131,7 @@ class AacSpliceTest {
         assertEquals(1_329_600L, plan.endSample)
         assertEquals(
             "atrim=start_sample=80384:end_sample=753600,asetpts=PTS-STARTPTS," +
-                "afade=t=out:start_sample=97216:nb_samples=576000",
+                "afade=t=out:start_sample=97216:nb_samples=576000:curve=cub",
             plan.tailFilter
         )
     }

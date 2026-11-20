@@ -241,7 +241,7 @@ data class SplicePlan(
             ":end_sample=${endSample - decodeStartSample}" +
             ",asetpts=PTS-STARTPTS" +
             ",afade=t=out:start_sample=${fadeStartSample - start}" +
-            ":nb_samples=${endSample - fadeStartSample}"
+            ":nb_samples=${endSample - fadeStartSample}:curve=$FADE_CURVE"
 
     /** Length of the re-encoded part */
     val tailDurationMs: Long get() = (endSample - junctionSample) * 1000 / sampleRate

@@ -10,6 +10,17 @@ internal val AAC_ENCODER_ARGS = listOf("-c:a", "aac", "-b:a", "192k")
 internal val M4A_MUXER_ARGS = listOf("-f", "mp4", "-movflags", "+faststart")
 
 /**
+ * Shape of the fade-out, as FFmpeg's afade curve: the gain is the cube of
+ * the fraction of the fade left. A linear fade sounds as if it stays loud
+ * until the last moment, since loudness is heard logarithmically; the cubic
+ * one falls at a more even rate in dB and is near silent at the end
+ */
+internal const val FADE_CURVE = "cub"
+
+/** Gain of the fade-out with [remaining] of it left, from 1 to 0, matching [FADE_CURVE] */
+internal fun fadeOutGain(remaining: Double): Double = remaining.coerceIn(0.0, 1.0).let { it * it * it }
+
+/**
  * Builds the FFmpeg arguments that extract the audio in a single pass
  *
  * The audio stream is copied when the source codec matches the target
@@ -62,7 +73,7 @@ fun buildSinglePassArgs(
             add("-af")
             add(
                 "asetpts=PTS-STARTPTS,afade=t=out" +
-                    ":st=${formatSeconds(it.startMs)}:d=${formatSeconds(it.durationMs)}"
+                    ":st=${formatSeconds(it.startMs)}:d=${formatSeconds(it.durationMs)}:curve=$FADE_CURVE"
             )
         }
         edits.outputDurationMs?.let { addAll(listOf("-t", formatSeconds(it))) }

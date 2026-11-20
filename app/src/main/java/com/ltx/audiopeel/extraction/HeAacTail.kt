@@ -154,7 +154,7 @@ internal class HeAacTail(
             frameSamples = plan.frameSamples
         ) { index ->
             val sample = from + index
-            if (sample < plan.fadeStartSample) 1.0 else (1 - (sample - plan.fadeStartSample) / fadeLength).coerceIn(0.0, 1.0)
+            if (sample < plan.fadeStartSample) 1.0 else fadeOutGain(1 - (sample - plan.fadeStartSample) / fadeLength)
         }
         log("HE-AAC join check: ${check.summary}")
         return check.problem?.let { SpliceOutcome.Unavailable("join check: $it") }
