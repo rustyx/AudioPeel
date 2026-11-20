@@ -56,7 +56,7 @@ private const val PACKET_PROBE_AFTER_MS = 100L
 const val SPLICE_DURATION_TOLERANCE_MS = 100L
 
 /**
- * Parameters of the audio stream in the head file
+ * Parameters of an audio stream: in the head file, or in the source
  *
  * @param startPts timestamp of the first decoded sample; the edits are
  *        relative to it, as in a single-pass extraction
@@ -74,11 +74,17 @@ data class AudioStreamInfo(
      * AAC encoder only produces AAC-LC, and timestamps must count samples
      */
     val isSpliceable: Boolean
+        get() = hasSpliceableCodec && timeBase == "1/$sampleRate"
+
+    /**
+     * Whether the codec allows splicing, regardless of the container's
+     * timestamps; checked on the source before copying anything
+     */
+    val hasSpliceableCodec: Boolean
         get() = codec == "aac" &&
             (profile == "LC" || profile == "1") &&
             channels in 1..2 &&
-            sampleRate > 0 &&
-            timeBase == "1/$sampleRate"
+            sampleRate > 0
 }
 
 /**

@@ -8,8 +8,9 @@ import kotlin.math.abs
 /**
  * What to extract
  *
- * @param input returns an FFmpeg input for the video; called once per run
- *        since some inputs (SAF parameters) can only be opened once
+ * @param input returns an FFmpeg input for the video; called for each FFmpeg
+ *        or FFprobe run on it, since some inputs (SAF parameters) can only be
+ *        opened once
  * @param outFile output file
  * @param format output format
  * @param sourceCodec codec of the source audio track, empty if unknown
@@ -127,12 +128,23 @@ class AudioExtractor(
         val tail = File(workDir, TAIL_FILE)
         val script = File(workDir, CONCAT_SCRIPT)
 
-        // 1. Copy the audio track
+        // 1. Check the codec first: copying the audio takes most of the time,
+        // wasted if the source can't be spliced, e.g. HE-AAC. If the source
+        // can't be probed, the head file is checked below instead
+        val sourceProbe = runner.ffprobe(buildStreamProbeArgs(request.input()))
+        if (sourceProbe.toFailure("source probe") == SpliceOutcome.Cancelled) return SpliceOutcome.Cancelled
+        val source = sourceProbe.takeIf { it.outcome == ToolResult.Outcome.SUCCESS }
+            ?.let { parseStreamInfo(it.output) }
+        if (source != null && !source.hasSpliceableCodec) {
+            return SpliceOutcome.Unavailable("unsupported source stream $source")
+        }
+
+        // 2. Copy the audio track
         runner.ffmpeg(buildHeadCopyArgs(request.input(), head.path, endMs)) {
             onProgress(HEAD_PROGRESS * fraction(it, endMs))
         }.toFailure("copy")?.let { return it }
 
-        // 2. Probe the stream and the packets before the fade, to find a junction
+        // 3. Probe the stream and the packets before the fade, to find a junction
         val info = runner.ffprobe(buildStreamProbeArgs(head.path))
             .also { result -> result.toFailure("stream probe")?.let { return it } }
             .let { parseStreamInfo(it.output) }
@@ -145,12 +157,12 @@ class AudioExtractor(
             ?: return SpliceOutcome.Unavailable("no steady frame boundary before the fade")
         log("$JUNCTION_LOG${plan.junctionSample - plan.startPts} (fade at ${plan.fadeStartSample - plan.startPts})")
 
-        // 3. Re-encode the tail with the fade
+        // 4. Re-encode the tail with the fade
         runner.ffmpeg(buildTailEncodeArgs(head.path, tail.path, plan, request.threads)) {
             onProgress(HEAD_PROGRESS + TAIL_PROGRESS * fraction(it, plan.tailDurationMs))
         }.toFailure("tail encode")?.let { return it }
 
-        // 4. Check that the tail's first frame continues the head seamlessly
+        // 5. Check that the tail's first frame continues the head seamlessly
         val tailStart = runner.ffprobe(buildFirstPacketProbeArgs(tail.path))
             .also { result -> result.toFailure("tail probe")?.let { return it } }
             .let { parsePackets(it.output).firstOrNull() }
@@ -158,13 +170,13 @@ class AudioExtractor(
             return SpliceOutcome.Unavailable("tail starts with ${tailStart?.window}")
         }
 
-        // 5. Join head and tail
+        // 6. Join head and tail
         script.writeText(buildConcatScript(head.name, tail.name, plan))
         runner.ffmpeg(buildJoinArgs(script.path, request.outFile.path)) {
             onProgress(HEAD_PROGRESS + TAIL_PROGRESS + JOIN_PROGRESS * fraction(it, endMs))
         }.toFailure("join")?.let { return it }
 
-        // 6. Check the result
+        // 7. Check the result
         val durationMs = runner.ffprobe(buildDurationProbeArgs(request.outFile.path))
             .also { result -> result.toFailure("duration probe")?.let { return it } }
             .let { parseDurationMs(it.output) }

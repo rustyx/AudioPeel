@@ -125,6 +125,8 @@ class FfmpegIntegrationTest {
         val source = makeSource("libfdk_aac", "-profile:a", "aac_he", "-b:a", "64k")
         val result = extract(source, cutSeconds = 5, fadeSeconds = 8)
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), result)
+        // Detected before copying the audio
+        assertTrue(logs.toString(), logs.single().contains("unsupported source stream"))
     }
 
     private fun assumeFdk() {

@@ -46,6 +46,9 @@ class AacSpliceTest {
         assertFalse(lc48k.copy(codec = "mp3").isSpliceable)
         assertFalse(lc48k.copy(channels = 6).isSpliceable)
         assertFalse(lc48k.copy(timeBase = "1/90000").isSpliceable)
+        // Before copying, only the codec is checked
+        assertTrue(lc48k.copy(timeBase = "1/90000").hasSpliceableCodec)
+        assertFalse(lc48k.copy(profile = "4", timeBase = "1/24000").hasSpliceableCodec)
     }
 
     @Test

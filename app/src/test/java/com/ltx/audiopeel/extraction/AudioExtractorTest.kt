@@ -58,12 +58,12 @@ class AudioExtractorTest {
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SPLICED), extract(progress = progress))
         assertEquals(
             listOf(
-                Step.HEAD, Step.STREAM_PROBE, Step.PACKET_PROBE, Step.TAIL, Step.TAIL_PROBE, Step.JOIN,
-                Step.DURATION_PROBE
+                Step.SOURCE_PROBE, Step.HEAD, Step.STREAM_PROBE, Step.PACKET_PROBE, Step.TAIL, Step.TAIL_PROBE,
+                Step.JOIN, Step.DURATION_PROBE
             ),
             runner.steps
         )
-        assertEquals(1, inputsOpened)
+        assertEquals(2, inputsOpened)
         assertTrue(outFile.exists())
         assertFalse("work files are removed", workDir.exists())
         assertTrue(runner.concatScript!!.contains("outpoint 15.669333"))
@@ -87,21 +87,44 @@ class AudioExtractorTest {
     }
 
     @Test
-    fun unsupportedStreamFallsBackWithFreshInput() {
-        runner.streamProbeOutput = runner.streamProbeOutput.replace("profile=LC", "profile=4")
+    fun unsupportedSourceFallsBackBeforeCopying() {
+        // HE-AAC, with timestamps counting the core's samples
+        runner.sourceProbeOutput = runner.sourceProbeOutput.replace("profile=LC", "profile=4")
+            .replace("time_base=1/48000", "time_base=1/24000")
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
-        assertEquals(listOf(Step.HEAD, Step.STREAM_PROBE, Step.SINGLE_PASS), runner.steps)
+        assertEquals(listOf(Step.SOURCE_PROBE, Step.SINGLE_PASS), runner.steps)
         assertEquals(2, inputsOpened)
         assertTrue(runner.singlePassArgs!!.contains("saf:2"))
-        assertTrue(logs.single().contains("unsupported stream"))
+        assertTrue(logs.single().contains("unsupported source stream"))
         assertFalse(workDir.exists())
+    }
+
+    @Test
+    fun sourceTimestampsDontMatter() {
+        // The head file gets its own timestamps
+        runner.sourceProbeOutput = runner.sourceProbeOutput.replace("time_base=1/48000", "time_base=1/90000")
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SPLICED), extract())
+    }
+
+    @Test
+    fun unprobeableSourceIsCheckedAfterCopying() {
+        runner.failing = Step.SOURCE_PROBE
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SPLICED), extract())
+        runner.steps.clear()
+        runner.streamProbeOutput = runner.streamProbeOutput.replace("profile=LC", "profile=4")
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
+        assertEquals(listOf(Step.SOURCE_PROBE, Step.HEAD, Step.STREAM_PROBE, Step.SINGLE_PASS), runner.steps)
+        assertTrue(logs.last().contains("unsupported stream"))
     }
 
     @Test
     fun noSteadyJunctionFallsBack() {
         runner.packetHeader = "2120 00"  // long-start: the source switches to short blocks everywhere
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
-        assertEquals(listOf(Step.HEAD, Step.STREAM_PROBE, Step.PACKET_PROBE, Step.SINGLE_PASS), runner.steps)
+        assertEquals(
+            listOf(Step.SOURCE_PROBE, Step.HEAD, Step.STREAM_PROBE, Step.PACKET_PROBE, Step.SINGLE_PASS),
+            runner.steps
+        )
         assertTrue(logs.single().contains("no steady frame boundary"))
     }
 
@@ -141,7 +164,7 @@ class AudioExtractorTest {
 
     @Test
     fun cancelDuringSpliceStopsWithoutFallback() {
-        listOf(Step.HEAD, Step.TAIL, Step.JOIN).forEach { cancelling ->
+        listOf(Step.SOURCE_PROBE, Step.HEAD, Step.TAIL, Step.JOIN).forEach { cancelling ->
             runner.steps.clear()
             runner.cancelling = cancelling
             runner.isCancelled = false
@@ -168,7 +191,7 @@ class AudioExtractorTest {
         assertEquals(listOf(0.5f), progress)
     }
 
-    private enum class Step { HEAD, STREAM_PROBE, PACKET_PROBE, TAIL, TAIL_PROBE, JOIN, DURATION_PROBE, SINGLE_PASS }
+    private enum class Step { SOURCE_PROBE, HEAD, STREAM_PROBE, PACKET_PROBE, TAIL, TAIL_PROBE, JOIN, DURATION_PROBE, SINGLE_PASS }
 
     /**
      * Recognizes each step from its arguments and simulates it
@@ -180,6 +203,7 @@ class AudioExtractorTest {
         var progressMs: Long? = null
         var streamProbeOutput =
             "codec_name=aac\nprofile=LC\nsample_rate=48000\nchannels=2\ntime_base=1/48000\nstart_pts=0\n"
+        var sourceProbeOutput = streamProbeOutput
 
         /** First bytes of the head packets: channel pair, long-only window, KBD shape */
         var packetHeader = "211a 08"
@@ -222,9 +246,14 @@ class AudioExtractorTest {
                     generateSequence(650_240L) { it + 1024 }.take(110)
                         .joinToString("\n") { "pts=$it\ndata=\n00000000: $packetHeader 1234  !..\n" }
                 args.contains("format=duration") -> Step.DURATION_PROBE to durationOutput
+                args.last().startsWith("saf:") -> Step.SOURCE_PROBE to sourceProbeOutput
                 else -> Step.STREAM_PROBE to streamProbeOutput
             }
             steps += step
+            if (step == cancelling) {
+                isCancelled = true
+                return ToolResult(ToolResult.Outcome.CANCELLED)
+            }
             if (step == failing) return ToolResult(ToolResult.Outcome.FAILED, "boom")
             return ToolResult(ToolResult.Outcome.SUCCESS, output)
         }
