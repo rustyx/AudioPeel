@@ -17,6 +17,7 @@ import com.ltx.audiopeel.extraction.AudioExtractor
 import com.ltx.audiopeel.extraction.ExtractionRequest
 import com.ltx.audiopeel.extraction.ExtractionResult
 import com.ltx.audiopeel.extraction.FfmpegKitRunner
+import com.ltx.audiopeel.extraction.MediaCodecAacEncoder
 import com.ltx.audiopeel.utils.EndEditSettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -390,6 +391,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val extractor = AudioExtractor(
                         runner = runner,
                         workDir = File(appContext.cacheDir, EXTRACTION_WORK_DIR),
+                        heAacEncoder = MediaCodecAacEncoder(),
                         log = { Log.i("AudioPeel", it) }
                     )
                     val result = extractor.extract(request) { progress ->

@@ -43,16 +43,37 @@ sealed interface ExtractionResult {
     }
 }
 
+internal sealed interface SpliceOutcome {
+    data object Done : SpliceOutcome
+    data object Cancelled : SpliceOutcome
+    data class Unavailable(val reason: String) : SpliceOutcome
+}
+
+/** Maps an unsuccessful step to the splice outcome, or null if it succeeded */
+internal fun ToolResult.toSpliceFailure(runner: MediaToolRunner, step: String): SpliceOutcome? = when {
+    outcome == ToolResult.Outcome.CANCELLED || runner.isCancelled -> SpliceOutcome.Cancelled
+    outcome == ToolResult.Outcome.FAILED ->
+        SpliceOutcome.Unavailable("$step failed: ${output.takeLast(MAX_LOGGED_OUTPUT)}")
+    else -> null
+}
+
+private const val MAX_LOGGED_OUTPUT = 2000
+
+internal fun fraction(positionMs: Long, totalMs: Long): Float =
+    if (totalMs > 0) (positionMs.toFloat() / totalMs).coerceIn(0f, 1f) else 0f
+
 /**
  * Extracts audio, re-encoding only the faded end of AAC audio when possible
  *
  * @param runner runs FFmpeg and FFprobe
  * @param workDir directory for intermediate files; emptied after each run
+ * @param heAacEncoder encodes HE-AAC tails; without one, HE-AAC is re-encoded entirely
  * @param log receives diagnostic messages
  */
 class AudioExtractor(
     private val runner: MediaToolRunner,
     private val workDir: File,
+    private val heAacEncoder: AacEncoder? = null,
     private val log: (String) -> Unit = {},
 ) {
     /**
@@ -110,10 +131,11 @@ class AudioExtractor(
         }
     }
 
-    private sealed interface SpliceOutcome {
-        data object Done : SpliceOutcome
-        data object Cancelled : SpliceOutcome
-        data class Unavailable(val reason: String) : SpliceOutcome
+    /** Whether a tail for this stream can be encoded */
+    private fun canEncode(stream: AudioStreamInfo) = when (stream.aacProfile) {
+        AacProfile.LC -> true
+        AacProfile.HE -> heAacEncoder?.canEncodeHeAac(stream.sampleRate, stream.codedChannels) == true
+        null -> false
     }
 
     private fun splice(
@@ -129,73 +151,93 @@ class AudioExtractor(
         val script = File(workDir, CONCAT_SCRIPT)
 
         // 1. Check the codec first: copying the audio takes most of the time,
-        // wasted if the source can't be spliced, e.g. HE-AAC. If the source
-        // can't be probed, the head file is checked below instead
+        // wasted if the source can't be spliced. If the source can't be
+        // probed, the head file is checked below instead
         val sourceProbe = runner.ffprobe(buildStreamProbeArgs(request.input()))
-        if (sourceProbe.toFailure("source probe") == SpliceOutcome.Cancelled) return SpliceOutcome.Cancelled
+        if (sourceProbe.toSpliceFailure(runner, "source probe") == SpliceOutcome.Cancelled) return SpliceOutcome.Cancelled
         val source = sourceProbe.takeIf { it.outcome == ToolResult.Outcome.SUCCESS }
             ?.let { parseStreamInfo(it.output) }
-        if (source != null && !source.hasSpliceableCodec) {
+        if (source != null && !canEncode(source)) {
             return SpliceOutcome.Unavailable("unsupported source stream $source")
         }
 
         // 2. Copy the audio track
         runner.ffmpeg(buildHeadCopyArgs(request.input(), head.path, endMs)) {
             onProgress(HEAD_PROGRESS * fraction(it, endMs))
-        }.toFailure("copy")?.let { return it }
+        }.toSpliceFailure(runner, "copy")?.let { return it }
 
         // 3. Probe the stream and the packets before the fade, to find a junction
         val info = runner.ffprobe(buildStreamProbeArgs(head.path))
-            .also { result -> result.toFailure("stream probe")?.let { return it } }
+            .also { result -> result.toSpliceFailure(runner, "stream probe")?.let { return it } }
             .let { parseStreamInfo(it.output) }
             ?: return SpliceOutcome.Unavailable("unreadable stream parameters")
-        if (!info.isSpliceable) return SpliceOutcome.Unavailable("unsupported stream $info")
+        if (!info.isSpliceable || !canEncode(info)) {
+            return SpliceOutcome.Unavailable("unsupported stream $info")
+        }
         val packets = runner.ffprobe(buildPacketProbeArgs(head.path, info, fadeOut.startMs))
-            .also { result -> result.toFailure("packet probe")?.let { return it } }
+            .also { result -> result.toSpliceFailure(runner, "packet probe")?.let { return it } }
             .let { parsePackets(it.output) }
         val plan = planAacSplice(info, packets, fadeOut)
             ?: return SpliceOutcome.Unavailable("no steady frame boundary before the fade")
         log("$JUNCTION_LOG${plan.junctionSample - plan.startPts} (fade at ${plan.fadeStartSample - plan.startPts})")
 
         // 4. Re-encode the tail with the fade
-        runner.ffmpeg(buildTailEncodeArgs(head.path, tail.path, plan, request.threads)) {
-            onProgress(HEAD_PROGRESS + TAIL_PROGRESS * fraction(it, plan.tailDurationMs))
-        }.toFailure("tail encode")?.let { return it }
+        val tailProgress = { fraction: Float -> onProgress(HEAD_PROGRESS + TAIL_PROGRESS * fraction) }
+        val heAacTail = heAacEncoder?.let { HeAacTail(runner, it, workDir, log) }
+        when (plan.profile) {
+            AacProfile.LC -> encodeLcTail(plan, head, tail, request.threads, tailProgress)
+            AacProfile.HE -> {
+                // The source usually states the encoder's nominal bit rate, the copy only its average
+                val bitRate = listOfNotNull(source?.bitRate, info.bitRate).firstOrNull { it > 0 }
+                    ?: return SpliceOutcome.Unavailable("unknown bit rate")
+                (heAacTail ?: return SpliceOutcome.Unavailable("no HE-AAC encoder")).encode(
+                    plan, head, tail, roundBitRate(bitRate), request.threads, tailProgress
+                )
+            }
+        }?.let { return it }
 
-        // 5. Check that the tail's first frame continues the head seamlessly
-        val tailStart = runner.ffprobe(buildFirstPacketProbeArgs(tail.path))
-            .also { result -> result.toFailure("tail probe")?.let { return it } }
-            .let { parsePackets(it.output).firstOrNull() }
-        if (!continuesLongWindow(tailStart?.window)) {
-            return SpliceOutcome.Unavailable("tail starts with ${tailStart?.window}")
-        }
-
-        // 6. Join head and tail
+        // 5. Join head and tail
         script.writeText(buildConcatScript(head.name, tail.name, plan))
         runner.ffmpeg(buildJoinArgs(script.path, request.outFile.path)) {
             onProgress(HEAD_PROGRESS + TAIL_PROGRESS + JOIN_PROGRESS * fraction(it, endMs))
-        }.toFailure("join")?.let { return it }
+        }.toSpliceFailure(runner, "join")?.let { return it }
 
-        // 7. Check the result
+        // 6. Check the result
         val durationMs = runner.ffprobe(buildDurationProbeArgs(request.outFile.path))
-            .also { result -> result.toFailure("duration probe")?.let { return it } }
+            .also { result -> result.toSpliceFailure(runner, "duration probe")?.let { return it } }
             .let { parseDurationMs(it.output) }
         if (durationMs == null || abs(durationMs - endMs) > SPLICE_DURATION_TOLERANCE_MS) {
             return SpliceOutcome.Unavailable("joined duration $durationMs ms, expected $endMs ms")
         }
+        if (plan.profile == AacProfile.HE) heAacTail?.checkJoin(plan, head, request.outFile)?.let { return it }
         return SpliceOutcome.Done
     }
 
-    /** Maps an unsuccessful step to the splice outcome, or null if it succeeded */
-    private fun ToolResult.toFailure(step: String): SpliceOutcome? = when {
-        outcome == ToolResult.Outcome.CANCELLED || runner.isCancelled -> SpliceOutcome.Cancelled
-        outcome == ToolResult.Outcome.FAILED ->
-            SpliceOutcome.Unavailable("$step failed: ${output.takeLast(MAX_LOGGED_OUTPUT)}")
-        else -> null
-    }
+    /**
+     * Encodes an AAC-LC tail with FFmpeg's encoder
+     *
+     * @return null if it succeeded, else why not
+     */
+    private fun encodeLcTail(
+        plan: SplicePlan,
+        head: File,
+        tail: File,
+        threads: Int,
+        onProgress: (Float) -> Unit,
+    ): SpliceOutcome? {
+        runner.ffmpeg(buildTailEncodeArgs(head.path, tail.path, plan, threads)) {
+            onProgress(fraction(it, plan.tailDurationMs))
+        }.toSpliceFailure(runner, "tail encode")?.let { return it }
 
-    private fun fraction(positionMs: Long, totalMs: Long): Float =
-        if (totalMs > 0) (positionMs.toFloat() / totalMs).coerceIn(0f, 1f) else 0f
+        // Check that the tail's first frame continues the head seamlessly
+        val tailStart = runner.ffprobe(buildFirstPacketProbeArgs(tail.path))
+            .also { result -> result.toSpliceFailure(runner, "tail probe")?.let { return it } }
+            .let { parsePackets(it.output).firstOrNull() }
+        if (!continuesLongWindow(tailStart?.window)) {
+            return SpliceOutcome.Unavailable("tail starts with ${tailStart?.window}")
+        }
+        return null
+    }
 
     companion object {
         /** Logged with the junction position in samples from the start of the audio */
@@ -204,12 +246,14 @@ class AudioExtractor(
         private const val HEAD_FILE = "head.m4a"
         private const val TAIL_FILE = "tail.m4a"
         private const val CONCAT_SCRIPT = "join.ffconcat"
-        private const val MAX_LOGGED_OUTPUT = 2000
 
         // Share of the progress bar per step: copying is bound by reading the
         // whole video, the tail is short, joining copies the audio once more
         private const val HEAD_PROGRESS = 0.7f
         private const val TAIL_PROGRESS = 0.1f
         private const val JOIN_PROGRESS = 0.2f
+
+        /** Rounds an average bit rate to whole kb/s, as encoders are configured */
+        private fun roundBitRate(bitRate: Long): Int = ((bitRate + 500) / 1000 * 1000).toInt()
     }
 }

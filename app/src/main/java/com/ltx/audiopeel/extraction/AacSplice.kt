@@ -18,7 +18,9 @@ import com.ltx.audiopeel.AudioEdits
  *     source's encoder delay is preserved)
  *  6. check the result's duration
  * Any step that fails or doesn't fit makes the caller fall back to
- * re-encoding all of the audio.
+ * re-encoding all of the audio. HE-AAC works the same way with frames of
+ * twice the samples, but its tail is encoded outside FFmpeg (see
+ * HeAacSplice.kt).
  *
  * Why the junction must be chosen with care: an AAC frame's samples are the
  * overlap-add of two consecutive transformed blocks, and the aliasing of one
@@ -40,6 +42,18 @@ import com.ltx.audiopeel.AudioEdits
 /** Samples per AAC-LC frame */
 const val AAC_FRAME_SAMPLES = 1024
 
+/**
+ * AAC profiles that can be spliced
+ *
+ * @param frameSamples output samples per frame
+ */
+enum class AacProfile(val frameSamples: Int) {
+    LC(AAC_FRAME_SAMPLES),
+
+    /** HE-AAC v1: AAC-LC at half the sample rate plus spectral band replication */
+    HE(2 * AAC_FRAME_SAMPLES),
+}
+
 /** Audio encoded before the junction and then dropped, to settle the encoder */
 private const val SPLICE_PREROLL_MS = 2000L
 
@@ -58,8 +72,12 @@ const val SPLICE_DURATION_TOLERANCE_MS = 100L
 /**
  * Parameters of an audio stream: in the head file, or in the source
  *
+ * @param channels channels FFmpeg decodes, which for HE-AAC are two even
+ *        if the stream is mono, in case it uses parametric stereo
  * @param startPts timestamp of the first decoded sample; the edits are
  *        relative to it, as in a single-pass extraction
+ * @param bitRate stated or average bit rate, 0 if unknown
+ * @param codecConfig AudioSpecificConfig as hex, empty if unknown
  */
 data class AudioStreamInfo(
     val codec: String,
@@ -68,23 +86,29 @@ data class AudioStreamInfo(
     val channels: Int,
     val timeBase: String,
     val startPts: Long,
+    val bitRate: Long = 0,
+    val codecConfig: String = "",
 ) {
-    /**
-     * Whether the tail can be encoded so that it joins this stream: FFmpeg's
-     * AAC encoder only produces AAC-LC, and timestamps must count samples
-     */
-    val isSpliceable: Boolean
-        get() = hasSpliceableCodec && timeBase == "1/$sampleRate"
+    /** Channels actually coded, as the AudioSpecificConfig states */
+    val codedChannels: Int
+        get() = codecConfig.chunked(2).mapNotNull { it.toIntOrNull(16)?.toByte() }.toByteArray()
+            .let(::parseAudioSpecificConfig)?.channels?.takeIf { it in 1..2 } ?: channels
 
     /**
-     * Whether the codec allows splicing, regardless of the container's
-     * timestamps; checked on the source before copying anything
+     * The profile if the codec allows splicing, regardless of the
+     * container's timestamps; checked on the source before copying anything
      */
-    val hasSpliceableCodec: Boolean
-        get() = codec == "aac" &&
-            (profile == "LC" || profile == "1") &&
-            channels in 1..2 &&
-            sampleRate > 0
+    val aacProfile: AacProfile?
+        get() = when {
+            codec != "aac" || channels !in 1..2 || sampleRate <= 0 -> null
+            profile == "LC" || profile == "1" -> AacProfile.LC
+            profile == "HE-AAC" || profile == "4" -> AacProfile.HE
+            else -> null
+        }
+
+    /** Whether the tail can be joined to this stream: timestamps must count samples */
+    val isSpliceable: Boolean
+        get() = aacProfile != null && timeBase == "1/$sampleRate"
 }
 
 /**
@@ -146,8 +170,8 @@ private const val ID_SCE = 0
 private const val ID_CPE = 1
 
 /**
- * The window FFmpeg's AAC encoder uses for long blocks; the frame before
- * the junction must use the same, since the encoder assumes it did
+ * The window FFmpeg's and Fraunhofer's AAC encoders use for long blocks; the
+ * frame before the junction must use the same, since the encoder assumes it did
  */
 private fun isLongKbd(window: AacWindow?) = window != null && window.sequence.endsLong && window.kbd
 
@@ -158,12 +182,13 @@ private fun isLongKbd(window: AacWindow?) = window != null && window.sequence.en
 fun continuesLongWindow(window: AacWindow?): Boolean = window != null && window.sequence.startsLong
 
 /** Frames encoded before the junction and then dropped */
-fun prerollFrames(sampleRate: Int): Int =
-    ((msToSamples(SPLICE_PREROLL_MS, sampleRate) + AAC_FRAME_SAMPLES - 1) / AAC_FRAME_SAMPLES).toInt()
+fun prerollFrames(sampleRate: Int, frameSamples: Int = AAC_FRAME_SAMPLES): Int =
+    ((msToSamples(SPLICE_PREROLL_MS, sampleRate) + frameSamples - 1) / frameSamples).toInt()
 
 /**
  * Resolved positions for splicing, in samples of the head file's timeline
  *
+ * @param profile AAC profile
  * @param sampleRate sample rate
  * @param channels channel count
  * @param startPts timestamp of the first decoded sample
@@ -176,6 +201,7 @@ fun prerollFrames(sampleRate: Int): Int =
  * @param endSample end of the output (exclusive)
  */
 data class SplicePlan(
+    val profile: AacProfile,
     val sampleRate: Int,
     val channels: Int,
     val startPts: Long,
@@ -186,17 +212,36 @@ data class SplicePlan(
     val fadeStartSample: Long,
     val endSample: Long,
 ) {
+    val frameSamples: Int get() = profile.frameSamples
+
+    /**
+     * Where FFmpeg's decoded timeline starts, in samples of the head's
+     * timeline: it is rebased to the seek position
+     */
+    val decodeStartSample: Long get() = startPts + seekSeconds * sampleRate
+
     /** Filter that cuts the tail out of the decoded audio and fades it */
-    val tailFilter: String
-        get() {
-            // FFmpeg rebases the decoded timeline to the seek position
-            val decodeStart = startPts + seekSeconds * sampleRate
-            return "atrim=start_sample=${encodeStartSample - decodeStart}" +
-                ":end_sample=${endSample - decodeStart}" +
-                ",asetpts=PTS-STARTPTS" +
-                ",afade=t=out:start_sample=${fadeStartSample - encodeStartSample}" +
-                ":nb_samples=${endSample - fadeStartSample}"
-        }
+    val tailFilter: String get() = tailFilterFrom(encodeStartSample)
+
+    /**
+     * First sample of the PCM decoded for an external encoder: a frame early,
+     * so the encoder's input can be shifted to match its delay
+     */
+    val pcmStartSample: Long get() = encodeStartSample - frameSamples
+
+    /**
+     * Filter that cuts the PCM for an external encoder out of the decoded audio and fades it
+     *
+     * @param leadFrames frames to start before [pcmStartSample]
+     */
+    fun pcmFilter(leadFrames: Int): String = tailFilterFrom(pcmStartSample - leadFrames * frameSamples)
+
+    private fun tailFilterFrom(start: Long) =
+        "atrim=start_sample=${start - decodeStartSample}" +
+            ":end_sample=${endSample - decodeStartSample}" +
+            ",asetpts=PTS-STARTPTS" +
+            ",afade=t=out:start_sample=${fadeStartSample - start}" +
+            ":nb_samples=${endSample - fadeStartSample}"
 
     /** Length of the re-encoded part */
     val tailDurationMs: Long get() = (endSample - junctionSample) * 1000 / sampleRate
@@ -215,18 +260,24 @@ fun planAacSplice(
     fadeOut: AudioEdits.FadeOut,
 ): SplicePlan? {
     if (!info.isSpliceable) return null
+    val profile = info.aacProfile ?: return null
+    val frame = profile.frameSamples
     val rate = info.sampleRate
     val fadeStart = info.startPts + msToSamples(fadeOut.startMs, rate)
     val end = info.startPts + msToSamples(fadeOut.startMs + fadeOut.durationMs, rate)
-    val preroll = prerollFrames(rate) * AAC_FRAME_SAMPLES.toLong()
+    val preroll = prerollFrames(rate, frame) * frame.toLong()
     val windows = packets.associate { it.pts to it.window }
+    // The packet before the junction must be a frame earlier; with HE-AAC it
+    // isn't if the SBR runs at the core's sample rate, which is too rare to support
+    val previous = packets.map { it.pts }.sorted().zipWithNext().associate { (a, b) -> b to a }
     // The latest frame boundary before the fade where the source is in a
     // steady state: long windows on both sides
     val junction = packets.map { it.pts }
         .filter { it <= fadeStart && it - preroll >= info.startPts }
         .sortedDescending()
         .firstOrNull { pts ->
-            isLongKbd(windows[pts - AAC_FRAME_SAMPLES]) &&
+            previous[pts] == pts - frame &&
+                isLongKbd(windows[pts - frame]) &&
                 windows[pts]?.sequence == WindowSequence.ONLY_LONG
         }
         ?: return null
@@ -235,11 +286,12 @@ fun planAacSplice(
     // a few frames to settle after a seek
     val seekSeconds = maxOf(0L, (encodeStart - info.startPts) / rate - 1)
     return SplicePlan(
+        profile = profile,
         sampleRate = rate,
-        channels = info.channels,
+        channels = info.codedChannels,
         startPts = info.startPts,
         junctionSample = junction,
-        prerollFrames = prerollFrames(rate),
+        prerollFrames = prerollFrames(rate, frame),
         encodeStartSample = encodeStart,
         seekSeconds = seekSeconds,
         fadeStartSample = fadeStart,
@@ -259,11 +311,14 @@ fun buildHeadCopyArgs(input: String, headPath: String, endMs: Long): List<String
     "-t", formatSeconds(endMs + HEAD_COPY_MARGIN_MS), "-f", "mp4", headPath
 )
 
-/** FFprobe arguments that print the audio stream parameters as key=value lines */
+/**
+ * FFprobe arguments that print the audio stream parameters as key=value
+ * lines, with the codec config as a hex dump
+ */
 fun buildStreamProbeArgs(path: String): List<String> = listOf(
     "-v", "error", "-select_streams", "a:0",
-    "-show_entries", "stream=codec_name,profile,sample_rate,channels,time_base,start_pts",
-    "-of", "default=noprint_wrappers=1", path
+    "-show_entries", "stream=codec_name,profile,sample_rate,channels,time_base,start_pts,bit_rate,extradata",
+    "-show_data", "-of", "default=noprint_wrappers=1", path
 )
 
 /**
@@ -323,7 +378,7 @@ fun buildConcatScript(headName: String, tailName: String, plan: SplicePlan): Str
     return buildString {
         appendLine("ffconcat version 1.0")
         appendLine("file '$headName'")
-        appendLine("outpoint ${samplesToSeconds(plan.junctionSample - AAC_FRAME_SAMPLES / 2, rate)}")
+        appendLine("outpoint ${samplesToSeconds(plan.junctionSample - plan.frameSamples / 2, rate)}")
         appendLine("duration ${samplesToSeconds(plan.junctionSample - plan.startPts, rate)}")
         appendLine("file '$tailName'")
     }
@@ -346,23 +401,30 @@ fun buildDurationProbeArgs(path: String): List<String> = listOf(
 )
 
 /**
- * Parses key=value lines printed by FFprobe; other lines are ignored
+ * Parses key=value lines printed by FFprobe, and the hex dump of the codec
+ * config after them; other lines are ignored
  */
 fun parseStreamInfo(output: String): AudioStreamInfo? {
-    val values = output.lineSequence()
-        .map { it.trim() }
+    val lines = output.lineSequence().map { it.trim() }.toList()
+    val values = lines
         .mapNotNull { line ->
             val separator = line.indexOf('=')
             if (separator > 0) line.substring(0, separator) to line.substring(separator + 1) else null
         }
         .toMap()
+    val codecConfig = lines.dropWhile { it != "extradata=" }.drop(1)
+        .takeWhile { HEX_DUMP_LINE.matches(it) }
+        .joinToString("") { parseHexDumpLine(it) }
     return AudioStreamInfo(
         codec = values["codec_name"] ?: return null,
         profile = values["profile"].orEmpty(),
         sampleRate = values["sample_rate"]?.toIntOrNull() ?: return null,
         channels = values["channels"]?.toIntOrNull() ?: return null,
         timeBase = values["time_base"] ?: return null,
-        startPts = values["start_pts"]?.toLongOrNull() ?: return null
+        startPts = values["start_pts"]?.toLongOrNull() ?: return null,
+        // "N/A" when the container doesn't state it
+        bitRate = values["bit_rate"]?.toLongOrNull() ?: 0,
+        codecConfig = codecConfig
     )
 }
 
@@ -377,12 +439,7 @@ fun parsePackets(output: String): List<AacPacket> {
             pts = line.removePrefix("pts=").toLongOrNull()
             pts?.let { packets += AacPacket(it, null) }
         } else if (pts != null && line.startsWith(FIRST_DUMP_LINE)) {
-            // "00000000: 211a 080f c302 ...  ascii"; the last group of a packet may be one byte,
-            // and the ASCII column follows after two spaces
-            val hex = line.removePrefix(FIRST_DUMP_LINE).trim().split(' ')
-                .takeWhile { it.length in 2..4 && it.length % 2 == 0 && it.all { c -> c.isDigit() || c in 'a'..'f' } }
-                .joinToString("")
-            val bytes = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val bytes = parseHexDumpLine(line).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             packets[packets.lastIndex] = AacPacket(pts, parseAacWindow(bytes))
             pts = null
         }
@@ -391,6 +448,17 @@ fun parsePackets(output: String): List<AacPacket> {
 }
 
 private const val FIRST_DUMP_LINE = "00000000:"
+private val HEX_DUMP_LINE = Regex("[0-9a-f]{8}: .*")
+
+/**
+ * Reads the bytes of a hex dump line, "00000000: 211a 080f c302 ...  ascii",
+ * as hex; the last group may be one byte, and the ASCII column follows after
+ * two spaces
+ */
+private fun parseHexDumpLine(line: String): String =
+    line.substringAfter(':').trim().split(' ')
+        .takeWhile { it.length in 2..4 && it.length % 2 == 0 && it.all { c -> c.isDigit() || c in 'a'..'f' } }
+        .joinToString("")
 
 /** Parses a duration in seconds printed by FFprobe */
 fun parseDurationMs(output: String): Long? =

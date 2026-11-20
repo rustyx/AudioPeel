@@ -49,8 +49,19 @@ class AudioExtractorTest {
         sourceDurationMs = 39_700L
     )
 
+    private val encoder = FakeEncoder()
+
     private fun extract(request: ExtractionRequest = request(), progress: MutableList<Float> = mutableListOf()) =
-        AudioExtractor(runner, workDir) { logs += it }.extract(request) { progress += it }
+        AudioExtractor(runner, workDir, encoder) { logs += it }.extract(request) { progress += it }
+
+    /** An HE-AAC source at 44.1 kHz with packets as written by Fraunhofer's encoder */
+    private fun useHeAacSource() {
+        runner.streamProbeOutput =
+            "codec_name=aac\nprofile=4\nsample_rate=44100\nchannels=2\ntime_base=1/44100\nstart_pts=0\nbit_rate=48061\n"
+        runner.sourceProbeOutput = runner.streamProbeOutput.replace("bit_rate=48061", "bit_rate=48000")
+        runner.packetStart = -5058L + 2048 * 276
+        runner.packetStep = 2048
+    }
 
     @Test
     fun aacFadeToM4aIsSpliced() {
@@ -88,8 +99,8 @@ class AudioExtractorTest {
 
     @Test
     fun unsupportedSourceFallsBackBeforeCopying() {
-        // HE-AAC, with timestamps counting the core's samples
-        runner.sourceProbeOutput = runner.sourceProbeOutput.replace("profile=LC", "profile=4")
+        // HE-AAC v2, with timestamps counting the core's samples
+        runner.sourceProbeOutput = runner.sourceProbeOutput.replace("profile=LC", "profile=28")
             .replace("time_base=1/48000", "time_base=1/24000")
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
         assertEquals(listOf(Step.SOURCE_PROBE, Step.SINGLE_PASS), runner.steps)
@@ -111,10 +122,54 @@ class AudioExtractorTest {
         runner.failing = Step.SOURCE_PROBE
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SPLICED), extract())
         runner.steps.clear()
-        runner.streamProbeOutput = runner.streamProbeOutput.replace("profile=LC", "profile=4")
+        runner.streamProbeOutput = runner.streamProbeOutput.replace("profile=LC", "profile=28")
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
         assertEquals(listOf(Step.SOURCE_PROBE, Step.HEAD, Step.STREAM_PROBE, Step.SINGLE_PASS), runner.steps)
         assertTrue(logs.last().contains("unsupported stream"))
+    }
+
+    @Test
+    fun heAacWithoutUsableEncoderFallsBackBeforeCopying() {
+        useHeAacSource()
+        encoder.available = false
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
+        assertEquals(listOf(Step.SOURCE_PROBE, Step.SINGLE_PASS), runner.steps)
+        assertEquals(listOf(44_100 to 2), encoder.availabilityChecks)
+    }
+
+    @Test
+    fun heAacEncoderFailureFallsBack() {
+        useHeAacSource()
+        encoder.result = AacEncodeResult.Failed("no codec")
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
+        assertEquals(
+            listOf(Step.SOURCE_PROBE, Step.HEAD, Step.STREAM_PROBE, Step.PACKET_PROBE, Step.SINGLE_PASS),
+            runner.steps
+        )
+        // Calibration first, at the source's nominal bit rate
+        assertEquals(listOf(AacEncoderConfig(44_100, 2, 48_000) to 0L), encoder.calls)
+        assertTrue(logs.first().startsWith(AudioExtractor.JUNCTION_LOG))
+        assertTrue(logs.last().contains("encoder failed: no codec"))
+        assertFalse(workDir.exists())
+    }
+
+    @Test
+    fun heAacEncoderExceptionFallsBack() {
+        useHeAacSource()
+        encoder.exception = IllegalStateException("codec died")
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), extract())
+        assertTrue(logs.last().contains("tail failed: java.lang.IllegalStateException: codec died"))
+        assertFalse(workDir.exists())
+    }
+
+    @Test
+    fun heAacEncoderCancelStops() {
+        useHeAacSource()
+        encoder.result = AacEncodeResult.Cancelled
+        assertEquals(ExtractionResult.Cancelled, extract())
+        assertEquals(Step.PACKET_PROBE, runner.steps.last())
+        assertFalse(outFile.exists())
+        assertFalse(workDir.exists())
     }
 
     @Test
@@ -191,6 +246,31 @@ class AudioExtractorTest {
         assertEquals(listOf(0.5f), progress)
     }
 
+    private class FakeEncoder : AacEncoder {
+        var available = true
+        var result: AacEncodeResult = AacEncodeResult.Failed("not simulated")
+        var exception: Exception? = null
+        val availabilityChecks = mutableListOf<Pair<Int, Int>>()
+        val calls = mutableListOf<Pair<AacEncoderConfig, Long>>()
+
+        override fun canEncodeHeAac(sampleRate: Int, channels: Int): Boolean {
+            availabilityChecks += sampleRate to channels
+            return available
+        }
+
+        override fun encodeHeAac(
+            pcm: File,
+            skipSamples: Long,
+            config: AacEncoderConfig,
+            isCancelled: () -> Boolean,
+        ): AacEncodeResult {
+            assertTrue(pcm.exists())
+            calls += config to skipSamples
+            exception?.let { throw it }
+            return result
+        }
+    }
+
     private enum class Step { SOURCE_PROBE, HEAD, STREAM_PROBE, PACKET_PROBE, TAIL, TAIL_PROBE, JOIN, DURATION_PROBE, SINGLE_PASS }
 
     /**
@@ -211,6 +291,8 @@ class AudioExtractorTest {
         /** First bytes of the tail's first packet */
         var tailHeader = "211a 08"
         var durationOutput = "27.712000\n"
+        var packetStart = 650_240L
+        var packetStep = 1024L
         var concatScript: String? = null
         var singlePassArgs: List<String>? = null
         override var isCancelled = false
@@ -243,7 +325,7 @@ class AudioExtractorTest {
             val (step, output) = when {
                 args.contains("%+#1") -> Step.TAIL_PROBE to "pts=2016\ndata=\n00000000: $tailHeader\n"
                 args.contains("packet=pts,data") -> Step.PACKET_PROBE to
-                    generateSequence(650_240L) { it + 1024 }.take(110)
+                    generateSequence(packetStart) { it + packetStep }.take(110)
                         .joinToString("\n") { "pts=$it\ndata=\n00000000: $packetHeader 1234  !..\n" }
                 args.contains("format=duration") -> Step.DURATION_PROBE to durationOutput
                 args.last().startsWith("saf:") -> Step.SOURCE_PROBE to sourceProbeOutput

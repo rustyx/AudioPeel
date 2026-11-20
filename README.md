@@ -18,7 +18,7 @@ A lightweight Android video-to-audio tool that exports to MP3 / M4A / WAV / FLAC
 - **Multiple formats** — Supports MP3 / M4A / WAV / FLAC / OGG
 - **Smart suggestion** — Detects embedded audio codec and suggests a suitable output format
 - **Fast extraction** — Reads the video directly to reduce copying and stream-copies the audio track when codecs match for faster extraction
-- **Ending cut & fade-out** — Optionally cut the last seconds of the audio and/or fade out its end (12 s each by default); the settings are remembered. For M4A from AAC-LC audio usually only the end from shortly before the fade is re-encoded; otherwise all of the audio is
+- **Ending cut & fade-out** — Optionally cut the last seconds of the audio and/or fade out its end (12 s each by default); the settings are remembered. For M4A from AAC-LC or HE-AAC audio (common in downloaded videos) usually only the end from shortly before the fade is re-encoded; otherwise all of the audio is
 - **Progress & cancel** — Shows circular progress with percentage and supports canceling extraction
 - **Audio preview** — Preview the extracted audio after extraction succeeds
 - **File management** — Supports renaming and saving to `/Music/AudioPeel` and opening the audio folder
@@ -84,6 +84,8 @@ To build from the command line without Android Studio, point Gradle at your SDK 
 ```bash
 AUDIOPEEL_TEST_FFMPEG_IMAGE=jrottenberg/ffmpeg:6.0-alpine ./gradlew testDebugUnitTest
 ```
+
+`./gradlew connectedDebugAndroidTest` runs the extraction on a connected device or emulator, with the app's FFmpegKit build and Android's own AAC encoder, which re-encodes HE-AAC.
 
 ### Release signing
 

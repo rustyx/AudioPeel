@@ -120,12 +120,54 @@ class FfmpegIntegrationTest {
     }
 
     @Test
-    fun heAacFallsBackToSinglePass() {
+    fun heAacFadeIsSpliced() {
+        assumeFdk()
+        assertHeAacSpliced(makeSource("libfdk_aac", "-profile:a", "aac_he", "-b:a", "48k", rate = 44_100), 44_100)
+    }
+
+    @Test
+    fun heAacAt48kHzFadeIsSpliced() {
+        assumeFdk()
+        assertHeAacSpliced(makeSource("libfdk_aac", "-profile:a", "aac_he", "-b:a", "64k"), RATE)
+    }
+
+    @Test
+    fun monoHeAacFadeIsSpliced() {
+        assumeFdk()
+        val source = makeSource("libfdk_aac", "-profile:a", "aac_he", "-b:a", "32k", "-ac", "1", rate = 44_100)
+        // FFmpeg decodes it as stereo, in case it uses parametric stereo
+        assertHeAacSpliced(source, 44_100)
+    }
+
+    private fun assertHeAacSpliced(source: File, rate: Int) {
+        val cutSeconds = 5
+        val result = extract(source, cutSeconds, fadeSeconds = 8, heAacEncoder = DockerFdkEncoder())
+        assertEquals(logs.toString(), ExtractionResult.Success(ExtractionResult.Method.SPLICED), result)
+        val junction = logs.single { it.startsWith(AudioExtractor.JUNCTION_LOG) }
+            .removePrefix(AudioExtractor.JUNCTION_LOG).substringBefore(' ').toInt()
+        val out = decode(File(dir, "out.m4a"))
+        val ref = decode(source)
+        val end = (SOURCE_SECONDS - cutSeconds) * rate
+        assertEquals("length", end.toDouble(), (out.size / CHANNELS).toDouble(), rate * 0.03)
+        val copied = (junction - AacProfile.HE.frameSamples) * CHANNELS
+        assertEquals("first differing sample", null, (0 until copied).firstOrNull { out[it] != ref[it] })
+    }
+
+    @Test
+    fun heAacWithoutEncoderFallsBackBeforeCopying() {
         assumeFdk()
         val source = makeSource("libfdk_aac", "-profile:a", "aac_he", "-b:a", "64k")
         val result = extract(source, cutSeconds = 5, fadeSeconds = 8)
         assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), result)
-        // Detected before copying the audio
+        assertTrue(logs.toString(), logs.single().contains("unsupported source stream"))
+    }
+
+    @Test
+    fun heAacV2FallsBackBeforeCopying() {
+        assumeFdk()
+        val source = makeSource("libfdk_aac", "-profile:a", "aac_he_v2", "-b:a", "32k")
+        val result = extract(source, cutSeconds = 5, fadeSeconds = 8, heAacEncoder = DockerFdkEncoder())
+        assertEquals(ExtractionResult.Success(ExtractionResult.Method.SINGLE_PASS), result)
         assertTrue(logs.toString(), logs.single().contains("unsupported source stream"))
     }
 
@@ -142,7 +184,12 @@ class FfmpegIntegrationTest {
         return (planEndEdits(settings, SOURCE_SECONDS * 1000L) as EndEditPlan.Ready).edits
     }
 
-    private fun extract(source: File, cutSeconds: Int?, fadeSeconds: Int): ExtractionResult {
+    private fun extract(
+        source: File,
+        cutSeconds: Int?,
+        fadeSeconds: Int,
+        heAacEncoder: AacEncoder? = null,
+    ): ExtractionResult {
         val edits = edits(cutSeconds, fadeSeconds)
         val request = ExtractionRequest(
             input = { source.path },
@@ -153,14 +200,14 @@ class FfmpegIntegrationTest {
             edits = edits,
             sourceDurationMs = SOURCE_SECONDS * 1000L
         )
-        return AudioExtractor(runner, File(dir, "work")) { println(it); logs += it }.extract(request) {}
+        return AudioExtractor(runner, File(dir, "work"), heAacEncoder) { println(it); logs += it }.extract(request) {}
     }
 
     /** A video with tones and sharp transients, which make the encoder switch block sizes */
-    private fun makeSource(vararg audioCodecArgs: String, audioDelay: String = "0"): File {
+    private fun makeSource(vararg audioCodecArgs: String, audioDelay: String = "0", rate: Int = RATE): File {
         val file = File(dir, "source.mp4")
         val audio = "aevalsrc='0.25*sin(2*PI*220*t)+0.7*exp(-300*mod(t,0.25))*sin(2*PI*2500*t)" +
-            "|0.25*sin(2*PI*330*t)+0.7*exp(-300*mod(t+0.1,0.25))*sin(2*PI*1800*t)':s=$RATE"
+            "|0.25*sin(2*PI*330*t)+0.7*exp(-300*mod(t+0.1,0.25))*sin(2*PI*1800*t)':s=$rate"
         val args = listOf(
             "-y", "-f", "lavfi", "-t", "${SOURCE_SECONDS + 1}", "-i", "testsrc=size=160x120:rate=25",
             "-itsoffset", audioDelay, "-f", "lavfi", "-t", "$SOURCE_SECONDS", "-i", audio,
@@ -175,6 +222,48 @@ class FfmpegIntegrationTest {
         assertTrue(runner.ffmpeg(listOf("-y", "-i", file.path, "-map", "0:a:0", "-f", "f32le", raw.path)).isSuccess)
         val buffer = ByteBuffer.wrap(raw.readBytes()).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
         return FloatArray(buffer.remaining()).also { buffer.get(it) }
+    }
+
+    /**
+     * Fraunhofer's encoder, which Android's is based on. Like Android's, it
+     * writes raw frames (into an M4A), where only every tenth frame codes the
+     * SBR data independently; as ADTS, every frame would. The frames are
+     * extracted by copying them into ADTS
+     */
+    private inner class DockerFdkEncoder : AacEncoder {
+        override fun canEncodeHeAac(sampleRate: Int, channels: Int) = true
+
+        override fun encodeHeAac(
+            pcm: File,
+            skipSamples: Long,
+            config: AacEncoderConfig,
+            isCancelled: () -> Boolean,
+        ): AacEncodeResult {
+            val input = File(dir, "encoder-in.pcm")
+            input.writeBytes(pcm.readBytes().drop((skipSamples * 2 * config.channels).toInt()).toByteArray())
+            val m4a = File(dir, "encoder-out.m4a")
+            val adts = File(dir, "encoder-out.aac")
+            val result = runner.ffmpeg(
+                listOf(
+                    "-y", "-f", "s16le", "-ar", "${config.sampleRate}", "-ac", "${config.channels}", "-i", input.path,
+                    "-c:a", "libfdk_aac", "-profile:a", "aac_he", "-b:a", "${config.bitRate}", "-f", "mp4", m4a.path
+                )
+            )
+            if (!result.isSuccess) return AacEncodeResult.Failed(result.output)
+            val copy = runner.ffmpeg(listOf("-y", "-i", m4a.path, "-c", "copy", "-f", "adts", adts.path))
+            if (!copy.isSuccess) return AacEncodeResult.Failed(copy.output)
+            val data = adts.readBytes()
+            val frames = mutableListOf<ByteArray>()
+            var i = 0
+            while (i < data.size) {
+                val size = ((data[i + 3].toInt() and 3) shl 11) or ((data[i + 4].toInt() and 0xFF) shl 3) or
+                    ((data[i + 5].toInt() and 0xFF) ushr 5)
+                val header = if (data[i + 1].toInt() and 1 == 1) 7 else 9
+                frames += data.copyOfRange(i + header, i + size)
+                i += size
+            }
+            return AacEncodeResult.Success(null, frames)
+        }
     }
 
     private class DockerRunner(private val image: String, private val dir: File) : MediaToolRunner {

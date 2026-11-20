@@ -33,6 +33,26 @@ class AacSpliceTest {
             start_pts=-1024
         """.trimIndent()
         assertEquals(AudioStreamInfo("aac", "LC", 44_100, 1, "1/44100", -1024), parseStreamInfo(output))
+        // Mono HE-AAC: decoded as stereo, with the codec config after the values
+        val heAac = """
+            codec_name=aac
+            profile=4
+            sample_rate=44100
+            channels=2
+            time_base=1/44100
+            start_pts=0
+            bit_rate=N/A
+            extradata=
+            00000000: 2b8a 0800 0000 0000 0000 0000 0000 0000  +...............
+            00000010: 0000 0000 0000 0000 00                   .........
+
+        """.trimIndent()
+        val info = parseStreamInfo(heAac)!!
+        assertEquals("2b8a0800" + "00".repeat(21), info.codecConfig)
+        assertEquals(0L, info.bitRate)
+        assertEquals(2, info.channels)
+        assertEquals(1, info.codedChannels)
+        assertEquals(2, info.copy(codecConfig = "").codedChannels)
         assertNull(parseStreamInfo("codec_name=aac\nprofile=LC"))
         assertNull(parseStreamInfo(""))
     }
@@ -41,14 +61,17 @@ class AacSpliceTest {
     fun onlyAacLcWithSampleTimestampsIsSpliceable() {
         assertTrue(lc48k.isSpliceable)
         assertTrue(lc48k.copy(profile = "1", channels = 1).isSpliceable)
-        assertFalse(lc48k.copy(profile = "4").isSpliceable)
-        assertFalse(lc48k.copy(profile = "HE-AAC").isSpliceable)
+        assertTrue(lc48k.copy(profile = "4").isSpliceable)
+        assertFalse(lc48k.copy(profile = "HE-AACv2").isSpliceable)
         assertFalse(lc48k.copy(codec = "mp3").isSpliceable)
         assertFalse(lc48k.copy(channels = 6).isSpliceable)
         assertFalse(lc48k.copy(timeBase = "1/90000").isSpliceable)
         // Before copying, only the codec is checked
-        assertTrue(lc48k.copy(timeBase = "1/90000").hasSpliceableCodec)
-        assertFalse(lc48k.copy(profile = "4", timeBase = "1/24000").hasSpliceableCodec)
+        assertEquals(AacProfile.LC, lc48k.copy(timeBase = "1/90000").aacProfile)
+        assertEquals(AacProfile.HE, lc48k.copy(profile = "4", timeBase = "1/24000").aacProfile)
+        assertEquals(AacProfile.HE, lc48k.copy(profile = "HE-AAC").aacProfile)
+        assertNull(lc48k.copy(profile = "28").aacProfile)
+        assertNull(lc48k.copy(profile = "HE-AACv2").aacProfile)
     }
 
     @Test
@@ -145,6 +168,16 @@ class AacSpliceTest {
     }
 
     @Test
+    fun junctionNeedsThePreviousFrameRightBeforeIt() {
+        // A packet missing away from the junction doesn't matter
+        val gapFarAway = packets(650_000, 760_000).filter { it.pts != 700_416L }
+        assertEquals(752_640L, planAacSplice(lc48k, gapFarAway, fade)!!.junctionSample)
+        // Right before it, it moves the junction
+        val gapBefore = packets(650_000, 760_000).filter { it.pts != 751_616L }
+        assertEquals(750_592L, planAacSplice(lc48k, gapBefore, fade)!!.junctionSample)
+    }
+
+    @Test
     fun noJunctionWithoutMatchingWindows() {
         // Long blocks with the sine shape, which FFmpeg's encoder doesn't use
         val sine = packets(650_000, 760_000).map { it.copy(window = AacWindow(WindowSequence.ONLY_LONG, false)) }
@@ -177,6 +210,8 @@ class AacSpliceTest {
         // No packets found
         assertNull(planAacSplice(lc48k, emptyList(), fade))
         // Unsupported stream
+        assertNull(planAacSplice(lc48k.copy(profile = "28"), packets(650_000, 760_000), fade))
+        // Packets not a frame apart: HE-AAC frames hold 2048 samples
         assertNull(planAacSplice(lc48k.copy(profile = "4"), packets(650_000, 760_000), fade))
     }
 
